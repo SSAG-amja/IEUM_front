@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Keyboard, Pressable, StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, Polyline } from 'react-native-maps';
+import MapView, { type Camera, Marker, Polyline } from 'react-native-maps';
 
 import { Pill } from '@/components/ieum/ieum-ui';
 import { IeumColors } from '@/constants/theme';
@@ -24,6 +24,8 @@ const SEOUL_REGION = {
   latitudeDelta: 0.16,
   longitudeDelta: 0.16,
 };
+const MAP_TAP_SEQUENCE_DELAY_MS = 700;
+const DOUBLE_TAP_ZOOM_BLOCK_MS = 1000;
 
 function coordinatesOf(feature: RouteFeature) {
   return feature.geometry.coordinates.map(([longitude, latitude]) => ({ latitude, longitude }));
@@ -57,11 +59,17 @@ export function MapVisual({
   onCloseFullscreen,
 }: MapVisualProps) {
   const mapRef = useRef<MapView>(null);
-  const { registerTap } = useTapSequence((count) => {
-    if (count === 3) {
-      onTripleTap?.();
-    }
-  });
+  const isMapReadyRef = useRef(false);
+  const stableCameraRef = useRef<Camera | null>(null);
+  const blockDoubleTapZoomUntilRef = useRef(0);
+  const { registerTap } = useTapSequence(
+    (count) => {
+      if (count === 3) {
+        onTripleTap?.();
+      }
+    },
+    MAP_TAP_SEQUENCE_DELAY_MS
+  );
   const routeCoordinates = useMemo(
     () => route?.geometry.features.flatMap((feature) => coordinatesOf(feature)) ?? [],
     [route]
@@ -86,6 +94,45 @@ export function MapVisual({
       );
     }
   }, [currentLocation, routeCoordinates]);
+
+  const rememberCurrentCamera = () => {
+    const map = mapRef.current;
+    if (!isMapReadyRef.current || !map) {
+      return;
+    }
+    void map
+      .getCamera()
+      .then((camera) => {
+        stableCameraRef.current = camera;
+      })
+      .catch(() => {
+        // The native map can be replaced while transitioning to/from fullscreen.
+      });
+  };
+
+  const handleRegionChangeComplete = () => {
+    const map = mapRef.current;
+    if (!isMapReadyRef.current || !map) {
+      return;
+    }
+    if (helperMode && Date.now() < blockDoubleTapZoomUntilRef.current && stableCameraRef.current) {
+      map.setCamera(stableCameraRef.current);
+      return;
+    }
+    rememberCurrentCamera();
+  };
+
+  const handleDoublePress = () => {
+    if (!helperMode) {
+      return;
+    }
+    blockDoubleTapZoomUntilRef.current = Date.now() + DOUBLE_TAP_ZOOM_BLOCK_MS;
+    if (stableCameraRef.current) {
+      mapRef.current?.setCamera(stableCameraRef.current);
+    }
+    registerTap();
+    registerTap();
+  };
 
   const destination = route?.summary.end;
 
@@ -116,6 +163,12 @@ export function MapVisual({
           rotateEnabled={helperMode}
           zoomEnabled={helperMode}
           toolbarEnabled={false}
+          onMapReady={() => {
+            isMapReadyRef.current = true;
+            rememberCurrentCamera();
+          }}
+          onDoublePress={handleDoublePress}
+          onRegionChangeComplete={handleRegionChangeComplete}
           onPress={() => {
             Keyboard.dismiss();
             if (helperMode) {

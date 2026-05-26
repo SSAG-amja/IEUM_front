@@ -1,5 +1,14 @@
 import { type Href, useRouter } from 'expo-router';
-import { Audio } from 'expo-av';
+import {
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioPlayer,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from 'expo-audio';
+import * as Haptics from 'expo-haptics';
+import * as Speech from 'expo-speech';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -13,9 +22,16 @@ import { ScreenFrame } from '@/features/ieum/shared/screen-frame';
 import { repeatAnnouncement, useAnnouncement } from '@/features/ieum/shared/use-announcement';
 
 type DestinationPhase = 'input' | 'candidate' | 'building';
+type VoiceCaptureStage = 'prompting' | 'starting' | 'listening' | 'processing' | 'retry';
 const GUIDANCE_ROUTE = '/guidance' as Href;
 const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
 const VOICE_DESTINATION_URL = `${API_URL}/api/v1/voice/destination`;
+const VOICE_PROMPT = '목적지를 말씀해주세요.';
+const SILENCE_TIMEOUT_MS = 1500;
+const NO_SPEECH_TIMEOUT_MS = 12000;
+const MAX_RECORDING_DURATION_MS = 30000;
+const SPEECH_METERING_THRESHOLD = -42;
+const CUE_DURATION_MS = 760;
 
 type VoiceDestinationResponse = {
   text: string;
@@ -23,6 +39,39 @@ type VoiceDestinationResponse = {
   prompt: string;
   audio: string;
 };
+
+async function restorePlaybackAudioMode() {
+  try {
+    await setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
+      interruptionMode: 'mixWithOthers',
+      shouldPlayInBackground: false,
+      shouldRouteThroughEarpiece: false,
+    });
+  } catch (cause) {
+    console.warn('failed to restore playback audio mode', cause);
+  }
+}
+
+function speakPrompt(text: string) {
+  return new Promise<void>((resolve) => {
+    Speech.speak(text, {
+      language: 'ko-KR',
+      rate: 0.95,
+      useApplicationAudioSession: false,
+      onDone: resolve,
+      onStopped: resolve,
+      onError: () => resolve(),
+    });
+  });
+}
+
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
 
 export function DestinationScreen() {
   const router = useRouter();
@@ -38,16 +87,44 @@ export function DestinationScreen() {
   const [phase, setPhase] = useState<DestinationPhase>('input');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [voiceStatus, setVoiceStatus] = useState('버튼을 눌러 목적지를 말해주세요.');
+  const [voiceStatus, setVoiceStatus] = useState(VOICE_PROMPT);
   const [isRecording, setIsRecording] = useState(false);
-  const recordingRef = useRef<Audio.Recording | null>(null);
+  const [isVoiceFlowActive, setIsVoiceFlowActive] = useState(false);
+  const [voiceCaptureStage, setVoiceCaptureStage] = useState<VoiceCaptureStage>('prompting');
+  const endCuePlayer = useAudioPlayer(require('../../../assets/audio/voice_recognition_end_tiding_down.wav'));
+  const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
+  const recorderState = useAudioRecorderState(recorder, 150);
+  const isRecordingRef = useRef(false);
+  const hasDetectedSpeechRef = useRef(false);
+  const lastSpeechAtRef = useRef<number | null>(null);
+  const submissionPendingRef = useRef(false);
+  const voiceSequenceRef = useRef(0);
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
 
   useEffect(() => {
     setDestinationQuery('');
     setRoute(null);
     clearRoute();
-    setVoiceStatus('버튼을 눌러 목적지를 말해주세요.');
+    setVoiceStatus(VOICE_PROMPT);
+    setVoiceCaptureStage('prompting');
   }, [clearRoute, setDestinationQuery, setRoute]);
+
+  useEffect(() => {
+    return () => {
+      voiceSequenceRef.current += 1;
+      if (!isRecordingRef.current) {
+        return;
+      }
+      isRecordingRef.current = false;
+      void recorder
+        .stop()
+        .catch((cause) => console.warn('failed to stop recording on unmount', cause))
+        .finally(() => {
+          void restorePlaybackAudioMode();
+        });
+    };
+  }, [recorder]);
 
   const sendVoiceDestination = useCallback(async (uri: string) => {
     const formData = new FormData();
@@ -63,8 +140,7 @@ export function DestinationScreen() {
         method: 'POST',
         body: formData,
       });
-    } catch (err) {
-      console.error('voice upload failed', err);
+    } catch {
       throw new Error('음성 업로드에 실패했습니다. 네트워크를 확인하세요.');
     }
 
@@ -86,42 +162,72 @@ export function DestinationScreen() {
     return payload as VoiceDestinationResponse;
   }, []);
 
+  const signalVoiceInputStart = useCallback(async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }, []);
+
+  const playEndCue = useCallback(async () => {
+    await endCuePlayer.seekTo(0);
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    endCuePlayer.play();
+    await wait(CUE_DURATION_MS);
+  }, [endCuePlayer]);
+
   const stopAndSubmitVoice = useCallback(async () => {
-    const recording = recordingRef.current;
-    if (!recording) {
+    if (!isRecordingRef.current) {
       return;
     }
 
+    isRecordingRef.current = false;
     setIsRecording(false);
-    setVoiceStatus('목적지를 확인 중입니다.');
+    setIsVoiceFlowActive(true);
+    setVoiceCaptureStage('processing');
+    await Speech.stop();
+    setVoiceStatus('종료 신호음입니다. 목적지를 확인 중입니다.');
+
+    let uri: string | null = null;
+    let recordingError: string | null = null;
+    try {
+      await recorder.stop();
+      uri = recorder.uri;
+    } catch (cause) {
+      recordingError = cause instanceof Error ? cause.message : '녹음을 종료하지 못했습니다.';
+      setError(recordingError);
+      setVoiceStatus(recordingError);
+    } finally {
+      await restorePlaybackAudioMode();
+      setIsVoiceFlowActive(false);
+      submissionPendingRef.current = false;
+    }
+
+    if (recordingError) {
+      setVoiceCaptureStage('retry');
+      repeatAnnouncement(recordingError);
+      return;
+    }
+
+    if (!uri) {
+      const message = '녹음 파일을 찾지 못했습니다. 화면을 두 번 터치해 다시 입력해주세요.';
+      setError(message);
+      setVoiceStatus(message);
+      setVoiceCaptureStage('retry');
+      repeatAnnouncement(message);
+      return;
+    }
+
+    await playEndCue();
+    setVoiceStatus('음성을 인식하고 있습니다.');
 
     try {
-      await recording.stopAndUnloadAsync();
-      // restore audio mode to playback after recording — ensure routing to speaker and no ducking
-      try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: false,
-          playsInSilentModeIOS: true,
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false,
-          staysActiveInBackground: false,
-        });
-      } catch (modeErr) {
-        console.warn('failed to restore audio mode', modeErr);
-      }
-      const uri = recording.getURI();
-      recordingRef.current = null;
-
-      if (!uri) {
-        throw new Error('녹음 파일을 찾지 못했습니다.');
-      }
-
       const result = await sendVoiceDestination(uri);
       const destination = result.destination.trim();
 
       if (!destination) {
-        setError(result.prompt || '목적지를 확인하지 못했습니다. 다시 말해주세요.');
-        setVoiceStatus(result.prompt || '목적지를 확인하지 못했습니다. 다시 말해주세요.');
+        const message = `${result.prompt || '목적지를 인식하지 못했습니다.'} 화면을 두 번 터치해 다시 입력해주세요.`;
+        setError(message);
+        setVoiceStatus(message);
+        setVoiceCaptureStage('retry');
+        repeatAnnouncement(message);
         return;
       }
 
@@ -131,55 +237,142 @@ export function DestinationScreen() {
       setPhase('candidate');
       setVoiceStatus(result.prompt || `${destination}으로 인식했습니다.`);
     } catch (cause) {
-      recordingRef.current = null;
-      setError(cause instanceof Error ? cause.message : '음성 목적지를 처리하지 못했습니다.');
-      setVoiceStatus(cause instanceof Error ? cause.message : '음성 목적지를 처리하지 못했습니다.');
+      const message = cause instanceof Error ? cause.message : '음성 목적지를 처리하지 못했습니다.';
+      setError(message);
+      setVoiceStatus(message);
+      setVoiceCaptureStage('retry');
+      repeatAnnouncement(message);
     }
-  }, [clearRoute, sendVoiceDestination, setDestinationQuery]);
+  }, [clearRoute, playEndCue, recorder, sendVoiceDestination, setDestinationQuery]);
 
-  const startVoiceRecording = useCallback(async () => {
+  const startVoiceRecording = useCallback(async (sequence: number) => {
     try {
-      setError(null);
-      clearRoute();
+      setIsVoiceFlowActive(true);
       setVoiceStatus('마이크 권한을 확인 중입니다.');
 
-      const permission = await Audio.requestPermissionsAsync();
+      const permission = await requestRecordingPermissionsAsync();
       if (!permission.granted) {
-        setVoiceStatus('마이크 권한이 필요합니다.');
+        const message = '마이크 권한이 필요합니다. 화면을 두 번 터치해 다시 시도해주세요.';
+        setIsVoiceFlowActive(false);
+        setVoiceStatus(message);
+        setVoiceCaptureStage('retry');
+        repeatAnnouncement(message);
         return;
       }
 
-      // set recording audio mode explicitly
-      try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          shouldDuckAndroid: true,
-          staysActiveInBackground: false,
-        });
-      } catch (modeErr) {
-        console.warn('failed to set recording audio mode', modeErr);
+      setVoiceCaptureStage('starting');
+      setVoiceStatus('진동 뒤에 목적지를 말씀해주세요.');
+      await signalVoiceInputStart();
+      if (sequence !== voiceSequenceRef.current || phaseRef.current !== 'input') {
+        setIsVoiceFlowActive(false);
+        return;
       }
 
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      recordingRef.current = recording;
-      setIsRecording(true);
-      setVoiceStatus('목적지를 말씀해주세요. 다시 누르면 전송합니다.');
-    } catch (cause) {
-      recordingRef.current = null;
-      setIsRecording(false);
-      setVoiceStatus(cause instanceof Error ? cause.message : '녹음을 시작하지 못했습니다.');
-    }
-  }, [clearRoute]);
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+        interruptionMode: 'mixWithOthers',
+        shouldPlayInBackground: false,
+        shouldRouteThroughEarpiece: false,
+      });
 
-  const handleVoiceButtonPress = useCallback(() => {
-    if (isRecording) {
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      hasDetectedSpeechRef.current = false;
+      lastSpeechAtRef.current = null;
+      submissionPendingRef.current = false;
+      isRecordingRef.current = true;
+      setIsRecording(true);
+      setVoiceCaptureStage('listening');
+      setVoiceStatus('듣는 중입니다. 말씀을 마치면 1.5초 뒤 자동으로 확인합니다.');
+    } catch (cause) {
+      isRecordingRef.current = false;
+      setIsRecording(false);
+      await restorePlaybackAudioMode();
+      setIsVoiceFlowActive(false);
+      const message = cause instanceof Error ? cause.message : '녹음을 시작하지 못했습니다.';
+      setVoiceStatus(message);
+      setVoiceCaptureStage('retry');
+      repeatAnnouncement(message);
+    }
+  }, [recorder, signalVoiceInputStart]);
+
+  const cancelCurrentRecording = useCallback(async () => {
+    if (!isRecordingRef.current) {
+      return;
+    }
+    isRecordingRef.current = false;
+    setIsRecording(false);
+    try {
+      await recorder.stop();
+    } finally {
+      await restorePlaybackAudioMode();
+    }
+  }, [recorder]);
+
+  const promptAndStartVoiceRecording = useCallback(async () => {
+    const sequence = voiceSequenceRef.current + 1;
+    voiceSequenceRef.current = sequence;
+    submissionPendingRef.current = false;
+    setError(null);
+    clearRoute();
+    setDestinationQuery('');
+    setIsVoiceFlowActive(true);
+    setVoiceCaptureStage('prompting');
+    await Speech.stop();
+    await cancelCurrentRecording();
+    setVoiceStatus(VOICE_PROMPT);
+    await speakPrompt(VOICE_PROMPT);
+
+    if (sequence !== voiceSequenceRef.current || phaseRef.current !== 'input') {
+      setIsVoiceFlowActive(false);
+      return;
+    }
+    await startVoiceRecording(sequence);
+  }, [cancelCurrentRecording, clearRoute, setDestinationQuery, startVoiceRecording]);
+
+  useEffect(() => {
+    if (phase === 'input') {
+      void promptAndStartVoiceRecording();
+    } else {
+      voiceSequenceRef.current += 1;
+    }
+  }, [phase, promptAndStartVoiceRecording]);
+
+  useEffect(() => {
+    if (!isRecording || !isRecordingRef.current || submissionPendingRef.current) {
+      return;
+    }
+    if (recorderState.durationMillis >= MAX_RECORDING_DURATION_MS) {
+      submissionPendingRef.current = true;
       void stopAndSubmitVoice();
       return;
     }
-
-    void startVoiceRecording();
-  }, [isRecording, startVoiceRecording, stopAndSubmitVoice]);
+    if (!hasDetectedSpeechRef.current && recorderState.durationMillis >= NO_SPEECH_TIMEOUT_MS) {
+      submissionPendingRef.current = true;
+      void stopAndSubmitVoice();
+      return;
+    }
+    const metering = recorderState.metering;
+    if (typeof metering !== 'number') {
+      return;
+    }
+    const now = Date.now();
+    if (metering > SPEECH_METERING_THRESHOLD) {
+      hasDetectedSpeechRef.current = true;
+      lastSpeechAtRef.current = now;
+      return;
+    }
+    if (
+      hasDetectedSpeechRef.current &&
+      lastSpeechAtRef.current !== null &&
+      now - lastSpeechAtRef.current >= SILENCE_TIMEOUT_MS
+    ) {
+      submissionPendingRef.current = true;
+      void stopAndSubmitVoice();
+      return;
+    }
+  }, [isRecording, recorderState.durationMillis, recorderState.metering, stopAndSubmitVoice]);
 
   const state = useMemo(() => {
     if (phase === 'input') {
@@ -187,7 +380,7 @@ export function DestinationScreen() {
         phase: '경로 입력',
         accent: '#129FC4',
         title: '어디로 안내할까요?',
-        subtitle: '출발지는 직접 입력하고 목적지는 음성으로 말합니다.',
+        subtitle: '목적지를 말씀한 뒤 잠시 기다리면 자동으로 확인합니다.',
         tts: voiceStatus,
       };
     }
@@ -227,7 +420,7 @@ export function DestinationScreen() {
     };
   }, [destinationQuery, error, originQuery, phase, route, voiceStatus]);
 
-  useAnnouncement(state.tts);
+  useAnnouncement(state.tts, phase !== 'input' && !isVoiceFlowActive);
 
   const calculateRoute = useCallback(async () => {
     setPhase('building');
@@ -246,13 +439,8 @@ export function DestinationScreen() {
 
   const handleTap = (count: number) => {
     if (count === 2 && phase === 'input') {
-      if (!originQuery.trim() || !destinationQuery.trim()) {
-        setError('출발지와 목적지를 입력해주세요.');
-        return;
-      }
       Keyboard.dismiss();
-      setError(null);
-      setPhase('candidate');
+      void promptAndStartVoiceRecording();
       return;
     }
     if (count === 2 && phase === 'candidate') {
@@ -281,9 +469,22 @@ export function DestinationScreen() {
     Keyboard.dismiss();
     registerTap();
   };
+  const isVoiceCueActive = voiceCaptureStage === 'starting' || voiceCaptureStage === 'processing';
+  const voiceStateLabel =
+    voiceCaptureStage === 'starting'
+      ? '진동 후 말씀해주세요'
+      : voiceCaptureStage === 'listening'
+        ? '듣는 중 · 발화 종료 1.5초 후 완료'
+        : voiceCaptureStage === 'processing'
+          ? '종료 신호음 · 확인 중'
+          : '화면을 두 번 터치해 다시 입력';
 
   return (
-    <ScreenFrame phase={state.phase} accent={state.accent} onPress={handleScreenPress}>
+    <ScreenFrame
+      phase={state.phase}
+      accent={state.accent}
+      warm={voiceCaptureStage === 'starting' || isRecording}
+      onPress={handleScreenPress}>
       <View style={styles.body}>
         {phase === 'input' && (
           <View style={styles.inputCard}>
@@ -297,23 +498,16 @@ export function DestinationScreen() {
               }}
               onPressIn={(event) => event.stopPropagation()}
               onSubmitEditing={Keyboard.dismiss}
-              placeholder="예: 시청역 또는 126.977088,37.565715"
+              placeholder="예: 고덕로 210 또는 127.1500,37.5500"
               placeholderTextColor={IeumColors.textMuted}
               returnKeyType="done"
               style={styles.input}
             />
             <Text style={styles.label}>목적지 (음성 입력)</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={isRecording ? '목적지 음성 입력 종료' : '목적지 음성 입력 시작'}
-              onPress={(event) => {
-                event.stopPropagation();
-                handleVoiceButtonPress();
-              }}
-              style={[styles.voiceButton, isRecording && styles.voiceButtonRecording]}>
-              {isRecording && <ActivityIndicator color={IeumColors.surface} />}
-              <Text style={styles.voiceButtonText}>{isRecording ? '녹음 종료' : '목적지 말하기'}</Text>
-            </Pressable>
+            <View style={[styles.voiceState, isRecording && styles.voiceStateRecording, isVoiceCueActive && styles.voiceStateCue]}>
+              {(isRecording || isVoiceCueActive) && <ActivityIndicator color={IeumColors.surface} />}
+              <Text style={styles.voiceStateText}>{voiceStateLabel}</Text>
+            </View>
             <Text style={styles.voiceHint}>{voiceStatus}</Text>
             {destinationQuery.trim() ? (
               <View style={styles.recognizedCard}>
@@ -371,7 +565,7 @@ export function DestinationScreen() {
       <View style={styles.actions}>
         <ActionLine
           count={2}
-          label={phase === 'input' ? '입력 확인' : phase === 'candidate' ? '경로 탐색' : route ? '안내 시작' : '다시 계산'}
+          label={phase === 'input' ? '다시 입력' : phase === 'candidate' ? '경로 탐색' : route ? '안내 시작' : '다시 계산'}
         />
         <ActionLine count={3} label={phase === 'input' ? '도움말 듣기' : '입력 수정'} muted={phase === 'input'} />
       </View>
@@ -400,7 +594,7 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     fontSize: 16,
   },
-  voiceButton: {
+  voiceState: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -413,11 +607,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     marginTop: 2,
   },
-  voiceButtonRecording: {
+  voiceStateRecording: {
     backgroundColor: '#B84C45',
     borderColor: '#E06E67',
   },
-  voiceButtonText: { color: IeumColors.text, fontSize: 14, fontWeight: '800' },
+  voiceStateCue: {
+    backgroundColor: '#8F5631',
+    borderColor: '#D8944A',
+  },
+  voiceStateText: { color: IeumColors.text, fontSize: 14, fontWeight: '800' },
   voiceHint: { color: IeumColors.textMuted, fontSize: 11, marginTop: 8 },
   recognizedCard: {
     borderRadius: 12,

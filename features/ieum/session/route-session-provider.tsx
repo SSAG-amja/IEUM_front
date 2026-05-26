@@ -1,4 +1,4 @@
-import { createContext, PropsWithChildren, useContext, useMemo, useState } from 'react';
+import { createContext, PropsWithChildren, useCallback, useContext, useMemo, useState } from 'react';
 
 import { RouteResponse } from '@/services/route-api';
 
@@ -15,9 +15,10 @@ type RouteSessionValue = {
 const RouteSessionContext = createContext<RouteSessionValue | null>(null);
 
 export function RouteSessionProvider({ children }: PropsWithChildren) {
-  const [originQuery, setOriginQuery] = useState('시청역');
+  const [originQuery, setOriginQuery] = useState('고덕로 210');
   const [destinationQuery, setDestinationQuery] = useState('강남역');
   const [route, setRoute] = useState<RouteResponse | null>(null);
+  const clearRoute = useCallback(() => setRoute(null), []);
   const value = useMemo(
     () => ({
       originQuery,
@@ -26,9 +27,9 @@ export function RouteSessionProvider({ children }: PropsWithChildren) {
       setOriginQuery,
       setDestinationQuery,
       setRoute,
-      clearRoute: () => setRoute(null),
+      clearRoute,
     }),
-    [destinationQuery, originQuery, route]
+    [clearRoute, destinationQuery, originQuery, route]
   );
 
   return <RouteSessionContext.Provider value={value}>{children}</RouteSessionContext.Provider>;

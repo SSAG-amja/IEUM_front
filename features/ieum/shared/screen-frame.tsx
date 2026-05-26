@@ -1,6 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
-import { PropsWithChildren, ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { PropsWithChildren, ReactNode, useEffect, useRef } from 'react';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Pill } from '@/components/ieum/ieum-ui';
@@ -11,9 +11,20 @@ type ScreenFrameProps = PropsWithChildren<{
   accent: string;
   onPress?: () => void;
   rightAction?: ReactNode;
+  warm?: boolean;
 }>;
 
-export function ScreenFrame({ phase, accent, onPress, rightAction, children }: ScreenFrameProps) {
+export function ScreenFrame({ phase, accent, onPress, rightAction, warm = false, children }: ScreenFrameProps) {
+  const warmOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(warmOpacity, {
+      toValue: warm ? 1 : 0,
+      duration: 500,
+      useNativeDriver: true,
+    }).start();
+  }, [warm, warmOpacity]);
+
   return (
     <Pressable style={styles.screen} onPress={onPress} accessible={false}>
       <SafeAreaView style={styles.safeArea}>
@@ -25,6 +36,15 @@ export function ScreenFrame({ phase, accent, onPress, rightAction, children }: S
           end={{ x: 1, y: 1 }}
           style={styles.gradient}
         />
+        <Animated.View pointerEvents="none" style={[styles.gradient, { opacity: warmOpacity }]}>
+          <LinearGradient
+            colors={['#9B4D2C68', '#7A30222C', 'transparent']}
+            locations={[0, 0.52, 0.92]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.gradient}
+          />
+        </Animated.View>
         <View style={styles.content}>
           <View style={styles.header}>
             <View>

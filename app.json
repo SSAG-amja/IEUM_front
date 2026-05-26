@@ -47,6 +47,12 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "이음이 목적지 음성 입력을 위해 마이크를 사용하도록 허용합니다."
+        }
       ]
     ],
     "experiments": {
