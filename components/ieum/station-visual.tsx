@@ -2,26 +2,46 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { Pill } from '@/components/ieum/ieum-ui';
 import { IeumColors } from '@/constants/theme';
+import { RouteInstruction } from '@/services/route-api';
 
-const STATION_NODES = ['3번 출입구', '엘리베이터', '개찰구', '2호선 승강장'];
+export function StationVisual({
+  helperMode,
+  instruction,
+}: {
+  helperMode: boolean;
+  instruction?: RouteInstruction;
+}) {
+  const stationName = instruction?.station_name
+    ? instruction.station_name.endsWith('역')
+      ? instruction.station_name
+      : `${instruction.station_name}역`
+    : '역사';
+  const phase =
+    instruction?.type === 'transfer'
+      ? '환승 이동'
+      : instruction?.type === 'subway_entry'
+        ? '역 안으로 진입'
+        : instruction?.type === 'subway_exit'
+          ? '역 밖으로 이동'
+          : instruction?.type === 'station_passage'
+            ? '역사 통과 이동'
+            : '내부 이동';
 
-export function StationVisual({ helperMode }: { helperMode: boolean }) {
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={styles.heading}>🚇  역 내부 동선도</Text>
+        <Text style={styles.heading}>{stationName} 안내</Text>
         <Pill>{helperMode ? '주변 도움 모드' : '단계형 안내'}</Pill>
       </View>
-      {STATION_NODES.map((node, index) => (
-        <View key={node} style={styles.row}>
-          <View style={[styles.number, index === 1 && styles.currentNumber]}>
-            <Text style={[styles.numberText, index === 1 && styles.currentNumberText]}>{index + 1}</Text>
-          </View>
-          <View style={styles.node}>
-            <Text style={styles.nodeText}>{node}</Text>
-          </View>
+      <View style={styles.stepRow}>
+        <View style={styles.currentNumber}>
+          <Text style={styles.currentNumberText}>1</Text>
         </View>
-      ))}
+        <Text style={styles.phase}>{phase}</Text>
+      </View>
+      <View style={styles.instruction}>
+        <Text style={styles.instructionText}>{instruction?.text ?? '역사 내부 이동 안내를 확인합니다.'}</Text>
+      </View>
     </View>
   );
 }
@@ -43,19 +63,18 @@ const styles = StyleSheet.create({
     marginBottom: 7,
   },
   heading: { color: '#E2E6ED', fontSize: 14, fontWeight: '700' },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 6 },
-  number: {
+  stepRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 8 },
+  currentNumber: {
     width: 29,
     height: 29,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 15,
-    backgroundColor: '#1D2839',
+    backgroundColor: '#C994F1',
   },
-  currentNumber: { backgroundColor: '#C994F1' },
-  numberText: { color: '#FFFFFF', fontWeight: '800' },
   currentNumberText: { color: '#141C2A' },
-  node: {
+  phase: { color: '#C994F1', fontSize: 12, fontWeight: '700' },
+  instruction: {
     flex: 1,
     borderRadius: 12,
     borderWidth: 1,
@@ -64,5 +83,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  nodeText: { color: '#E0E4EA', fontWeight: '700', fontSize: 12 },
+  instructionText: { color: '#E0E4EA', fontWeight: '700', fontSize: 12, lineHeight: 18 },
 });
