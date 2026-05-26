@@ -1,6 +1,15 @@
 import { type Href, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  AudioQuality,
+  IOSOutputFormat,
+  type RecordingOptions,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioRecorder,
+} from 'expo-audio';
+import * as Haptics from 'expo-haptics';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { ActionLine, Pill } from '@/components/ieum/ieum-ui';
 import { MapVisual } from '@/components/ieum/map-visual';
@@ -13,6 +22,28 @@ import { repeatAnnouncement, useAnnouncement } from '@/features/ieum/shared/use-
 
 type DestinationPhase = 'input' | 'candidate' | 'building';
 const GUIDANCE_ROUTE = '/guidance' as Href;
+const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
+const WAV_RECORDING_OPTIONS: RecordingOptions = {
+  extension: '.wav',
+  sampleRate: 44100,
+  numberOfChannels: 1,
+  bitRate: 128000,
+  android: {
+    outputFormat: 'default',
+    audioEncoder: 'default',
+  },
+  ios: {
+    outputFormat: IOSOutputFormat.LINEARPCM,
+    audioQuality: AudioQuality.MAX,
+    linearPCMBitDepth: 16,
+    linearPCMIsBigEndian: false,
+    linearPCMIsFloat: false,
+  },
+  web: {
+    mimeType: 'audio/wav',
+    bitsPerSecond: 128000,
+  },
+};
 
 export function DestinationScreen() {
   const router = useRouter();
@@ -28,6 +59,11 @@ export function DestinationScreen() {
   const [phase, setPhase] = useState<DestinationPhase>('input');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sttRecording, setSttRecording] = useState(false);
+  const [sttStatus, setSttStatus] = useState<string | null>(null);
+  const [speechPrompt, setSpeechPrompt] = useState<string | null>(null);
+  const recorder = useAudioRecorder(WAV_RECORDING_OPTIONS);
+  const flashValue = useRef(new Animated.Value(0)).current;
 
   const state = useMemo(() => {
     if (phase === 'input') {
@@ -75,7 +111,19 @@ export function DestinationScreen() {
     };
   }, [destinationQuery, error, originQuery, phase, route]);
 
-  useAnnouncement(state.tts);
+  const ttsMessage = speechPrompt ?? state.tts;
+  useAnnouncement(ttsMessage);
+
+  useEffect(() => {
+    if (!speechPrompt) {
+      return;
+    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Animated.sequence([
+      Animated.timing(flashValue, { toValue: 1, duration: 220, useNativeDriver: false }),
+      Animated.timing(flashValue, { toValue: 0, duration: 900, useNativeDriver: false }),
+    ]).start();
+  }, [flashValue, speechPrompt]);
 
   const calculateRoute = useCallback(async () => {
     setPhase('building');
@@ -92,7 +140,82 @@ export function DestinationScreen() {
     }
   }, [clearRoute, destinationQuery, originQuery, setRoute]);
 
+  const sendSttFile = useCallback(
+    async (uri: string) => {
+      try {
+        setSttStatus('인식 중');
+        const formData = new FormData();
+        formData.append('file', { uri, name: 'destination.wav', type: 'audio/wav' } as any);
+        const sttRes = await fetch(`${API_URL}/api/v1/voice/destination`, { method: 'POST', body: formData });
+        if (!sttRes.ok) {
+          throw new Error('음성 인식을 시작하지 못했습니다.');
+        }
+        const finalizeRes = await fetch(`${API_URL}/finalize`, { method: 'POST' });
+        const data = await finalizeRes.json();
+        const nextDestination = (data.destination || data.text || '').trim();
+        setSpeechPrompt(data.prompt || null);
+        if (nextDestination) {
+          setDestinationQuery(nextDestination);
+          clearRoute();
+        }
+        if (data.prompt) {
+          setPhase('input');
+          setSttStatus('추가 입력 대기');
+          return;
+        }
+        if (nextDestination) {
+          setPhase('candidate');
+          setSttStatus('입력 확인');
+          return;
+        }
+        setSttStatus('목적지 추출 실패');
+      } catch (cause) {
+        setSttStatus(cause instanceof Error ? cause.message : '음성 인식을 완료하지 못했습니다.');
+      }
+    },
+    [clearRoute, setDestinationQuery]
+  );
+
+  const startDestinationRecord = useCallback(async () => {
+    if (sttRecording) {
+      return;
+    }
+    setSpeechPrompt(null);
+    setSttStatus('마이크 요청 중');
+    setError(null);
+    await fetch(`${API_URL}/reset`, { method: 'POST' }).catch(() => null);
+    const permission = await requestRecordingPermissionsAsync();
+    if (!permission.granted) {
+      setSttStatus('마이크 권한이 필요합니다.');
+      return;
+    }
+    await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+    await recorder.prepareToRecordAsync();
+    recorder.record();
+    setSttRecording(true);
+    setSttStatus('목적지 듣는 중');
+  }, [recorder, sttRecording]);
+
+  const stopDestinationRecord = useCallback(async () => {
+    setSttRecording(false);
+    setSttStatus('음성 입력 종료');
+    try {
+      await recorder.stop();
+      const uri = recorder.uri;
+      if (!uri) {
+        setSttStatus('녹음 파일이 없습니다.');
+        return;
+      }
+      await sendSttFile(uri);
+    } catch (cause) {
+      setSttStatus(cause instanceof Error ? cause.message : '녹음을 종료하지 못했습니다.');
+    }
+  }, [recorder, sendSttFile]);
+
   const handleTap = (count: number) => {
+    if (speechPrompt) {
+      setSpeechPrompt(null);
+    }
     if (count === 2 && phase === 'input') {
       if (!originQuery.trim() || !destinationQuery.trim()) {
         setError('출발지와 목적지를 입력해주세요.');
@@ -130,8 +253,15 @@ export function DestinationScreen() {
     registerTap();
   };
 
+  const flashBackground = flashValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['rgba(0,0,0,0)', 'rgba(18,159,196,0.18)'],
+  });
+
   return (
-    <ScreenFrame phase={state.phase} accent={state.accent} onPress={handleScreenPress}>
+    <View style={styles.screenWrap}>
+      <Animated.View pointerEvents="none" style={[styles.flashOverlay, { backgroundColor: flashBackground }]} />
+      <ScreenFrame phase={state.phase} accent={state.accent} onPress={handleScreenPress}>
       <View style={styles.body}>
         {phase === 'input' && (
           <View style={styles.inputCard}>
@@ -157,6 +287,7 @@ export function DestinationScreen() {
               onChangeText={(value) => {
                 setDestinationQuery(value);
                 clearRoute();
+                setSpeechPrompt(null);
               }}
               onPressIn={(event) => event.stopPropagation()}
               onSubmitEditing={Keyboard.dismiss}
@@ -165,6 +296,17 @@ export function DestinationScreen() {
               returnKeyType="done"
               style={styles.input}
             />
+            <View style={styles.sttRow}>
+              <Pressable
+                style={[styles.sttButton, sttRecording && styles.sttButtonActive]}
+                onPressIn={(event) => event.stopPropagation()}
+                onPress={sttRecording ? stopDestinationRecord : startDestinationRecord}
+                disabled={loading}>
+                <Text style={styles.sttButtonText}>{sttRecording ? '목적지 듣는 중...' : '목적지 음성 입력'}</Text>
+              </Pressable>
+              {sttStatus ? <Text style={styles.sttStatus}>{sttStatus}</Text> : null}
+            </View>
+            {speechPrompt ? <Text style={styles.sttPrompt}>{speechPrompt}</Text> : null}
             <Text style={styles.hint}>서울 내 역명 또는 경도,위도 좌표로 테스트합니다.</Text>
           </View>
         )}
@@ -193,7 +335,7 @@ export function DestinationScreen() {
         </View>
         <View style={styles.ttsCard}>
           <Text style={styles.ttsHeading}>현재 음성 안내</Text>
-          <Text style={styles.ttsText}>{state.tts}</Text>
+          <Text style={styles.ttsText}>{ttsMessage}</Text>
         </View>
         {loading && (
           <View style={styles.status}>
@@ -221,10 +363,13 @@ export function DestinationScreen() {
         <ActionLine count={3} label={phase === 'input' ? '도움말 듣기' : '입력 수정'} muted={phase === 'input'} />
       </View>
     </ScreenFrame>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screenWrap: { flex: 1 },
+  flashOverlay: { ...StyleSheet.absoluteFillObject },
   body: { flex: 1, justifyContent: 'center' },
   inputCard: {
     borderRadius: 16,
@@ -246,6 +391,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   hint: { color: IeumColors.textMuted, fontSize: 11, marginTop: 8 },
+  sttRow: { marginTop: 12 },
+  sttButton: {
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#1C2A3D',
+    borderWidth: 1,
+    borderColor: '#2E415A',
+  },
+  sttButtonActive: {
+    backgroundColor: '#14374C',
+    borderColor: '#1C5E7E',
+  },
+  sttButtonText: { color: IeumColors.text, fontSize: 14, fontWeight: '700', textAlign: 'center' },
+  sttStatus: { color: IeumColors.textMuted, fontSize: 11, marginTop: 6 },
+  sttPrompt: { color: IeumColors.cyan, fontSize: 12, fontWeight: '600', marginTop: 8 },
   confirmCard: {
     alignItems: 'center',
     borderRadius: 20,
