@@ -96,12 +96,12 @@ export const IEUM_STATES: IeumState[] = [
   },
   {
     key: 'BUILDING_ROUTE',
-    phase: '경로 계산 완료',
+    phase: '경로 탐색 중',
     icon: '🧭',
-    main: '안전 경로를 찾았습니다',
-    sub: '점자블록, 음향신호기, 엘리베이터 정보를 우선했습니다.',
-    tts: '안전 경로를 찾았습니다. 안내를 시작하려면 화면을 두 번, 목적지를 바꾸려면 화면을 세 번 터치해주세요.',
-    chip: 'Safety-first',
+    main: '안전 경로를 탐색 중입니다',
+    sub: '점자블록, 음향신호기, 엘리베이터 정보를 우선해 계산하고 있습니다.',
+    tts: '안전 경로를 탐색 중입니다. 잠시 기다려주세요.',
+    chip: '탐색 중',
     accent: '#D78126',
     visual: 'map',
     mapTitle: '전체 경로 요약',
@@ -193,7 +193,7 @@ export const TOUCH_ACTIONS: Record<IeumStateKey, TouchActions> = {
   WAIT_DESTINATION_INPUT: { two: '목적지 말하기', three: '도움말 듣기', four: null },
   LISTENING_DESTINATION: { two: '입력 완료', three: '입력 취소', four: null },
   CANDIDATE_CONFIRMATION: { two: '현재 후보 확정', three: '다음 후보 듣기', four: null },
-  BUILDING_ROUTE: { two: '안내 시작', three: '목적지 변경', four: null },
+  BUILDING_ROUTE: { two: '경로 탐색 중', three: '목적지 변경', four: null },
   WALK_GUIDANCE: { two: '다시 듣기 / 내 위치 중심', three: '음성 명령 / 주변 도움 모드', four: null },
   ENTERING_STATION: { two: '다시 듣기 / 내 위치 중심', three: '시설 문의 / 주변 도움 모드', four: '역 진입 완료' },
   STATION_INDOOR_GUIDANCE: { two: '다시 듣기', three: '시설 문의', four: '승강장 도착' },
@@ -203,28 +203,119 @@ export const TOUCH_ACTIONS: Record<IeumStateKey, TouchActions> = {
   ARRIVED: { two: '새 목적지 입력', three: '안내 종료', four: null },
 };
 
-export function getViewState(state: IeumState, candidateIndex: number): IeumState {
-  const candidate = DESTINATION_CANDIDATES[candidateIndex];
+export function getViewState(
+  state: IeumState,
+  candidateIndex: number,
+  originQuery?: string,
+  destinationQuery?: string
+): IeumState {
+  const origin = originQuery?.trim() || '현재 위치';
+  const destination = destinationQuery?.trim();
+  const candidate = destination
+    ? { name: destination, desc: '입력한 목적지', hint: '서버 검색 대상' }
+    : DESTINATION_CANDIDATES[candidateIndex];
 
   if (state.key === 'CANDIDATE_CONFIRMATION') {
     return {
       ...state,
       main: candidate.name,
-      sub: `${candidate.desc} · ${candidate.hint}`,
-      tts: `목적지 후보는 ${DESTINATION_CANDIDATES.length}개입니다. ${candidateIndex + 1}번째 후보, ${candidate.name}입니다. 맞으면 화면을 두 번, 다음 후보를 들으려면 화면을 세 번 터치해주세요.`,
-      chip: `후보 ${candidateIndex + 1}/${DESTINATION_CANDIDATES.length}`,
+      sub: `${origin}에서 출발 · ${candidate.desc} · ${candidate.hint}`,
+      tts: `${origin}에서 ${candidate.name}으로 안내할까요? 맞으면 화면을 두 번, 목적지를 고치려면 화면을 세 번 터치해주세요.`,
+      chip: destination ? '입력 확인' : `후보 ${candidateIndex + 1}/${DESTINATION_CANDIDATES.length}`,
     };
   }
 
   if (state.key === 'BUILDING_ROUTE') {
     return {
       ...state,
-      sub: `${candidate.name}까지 점자블록, 음향신호기, 엘리베이터 정보를 우선해 계산했습니다.`,
-      tts: `${candidate.name}까지 안전 경로를 찾았습니다. 안내를 시작하려면 화면을 두 번, 목적지를 바꾸려면 화면을 세 번 터치해주세요.`,
+      phase: '경로 탐색 중',
+      main: '안전 경로를 탐색 중입니다',
+      sub: `${origin}에서 ${candidate.name}까지 접근성 경로를 계산하고 있습니다.`,
+      tts: '안전 경로를 탐색 중입니다. 잠시 기다려주세요.',
+      chip: '탐색 중',
     };
   }
 
   return state;
+}
+
+export function getRouteInstructionViewState(
+  instruction: RouteInstruction,
+  stepIndex: number,
+  stepCount: number,
+  previousInstruction?: RouteInstruction
+): IeumState {
+  const position = `${stepIndex + 1}/${stepCount}`;
+  const stationName = instruction.station_name
+    ? instruction.station_name.endsWith('역')
+      ? instruction.station_name
+      : `${instruction.station_name}역`
+    : '역사';
+  const lineName = instruction.line_code
+    ? instruction.line_code.endsWith('선')
+      ? instruction.line_code
+      : `${instruction.line_code}호선`
+    : '지하철';
+  const gpsResumes =
+    isGpsGuidedInstruction(instruction) &&
+    (!previousInstruction || ['subway_exit', 'station_passage'].includes(previousInstruction.type));
+  const text = gpsResumes
+    ? `GPS 안내를 시작합니다. 위치에 따라 다음 안내로 자동 전환합니다. ${instruction.text}`
+    : instruction.text;
+  const shared = {
+    key: 'WALK_GUIDANCE' as const,
+    icon: '🧭',
+    sub: text,
+    tts: text,
+    chip: `안내 ${position}`,
+    mapTitle: '실제 경로',
+  };
+
+  switch (instruction.type) {
+    case 'walk':
+      return { ...shared, phase: `보행 안내 ${position}`, main: '보행로 이동', accent: '#25A368', visual: 'map' };
+    case 'walk_with_braille':
+      return { ...shared, phase: `보행 안내 ${position}`, main: '점자블록 안내', accent: '#25A368', visual: 'map' };
+    case 'crosswalk':
+      return { ...shared, phase: `횡단 안내 ${position}`, main: '횡단보도 이동', accent: '#D78126', visual: 'map' };
+    case 'subway_entry':
+      return { ...shared, phase: `역 진입 ${position}`, main: `${stationName} 진입`, accent: '#8C49CA', visual: 'station' };
+    case 'subway_internal':
+      return { ...shared, phase: `역 내부 ${position}`, main: `${stationName} 내부 이동`, accent: '#356CD2', visual: 'station' };
+    case 'transfer':
+      return { ...shared, phase: `환승 ${position}`, main: `${stationName} 환승`, accent: '#356CD2', visual: 'station' };
+    case 'subway_ride':
+      return { ...shared, phase: `열차 이동 ${position}`, main: `${lineName} 이용`, accent: '#248BC8', visual: 'trainLine' };
+    case 'subway_exit':
+      return { ...shared, phase: `역 이탈 ${position}`, main: `${stationName} 밖으로 이동`, accent: '#8C49CA', visual: 'station' };
+    case 'station_passage':
+      return { ...shared, phase: `역사 통과 ${position}`, main: `${stationName} 통과 이동`, accent: '#8C49CA', visual: 'station' };
+    case 'destination':
+      return {
+        ...shared,
+        key: 'ARRIVED',
+        phase: '도착 완료',
+        icon: '✅',
+        main: '목적지에 도착했습니다',
+        chip: '도착',
+        accent: '#22A267',
+        visual: 'map',
+        mapTitle: '도착 위치 확인',
+      };
+    default:
+      return { ...shared, phase: `이동 안내 ${position}`, main: '경로 이동', accent: '#25A368', visual: 'map' };
+  }
+}
+
+export function isGpsGuidedInstruction(instruction?: RouteInstruction) {
+  return Boolean(
+    instruction &&
+      ['walk', 'walk_with_braille', 'crosswalk', 'move', 'facility_connector'].includes(instruction.type)
+  );
+}
+
+export function requiresGuidanceConfirmation(instruction?: RouteInstruction) {
+  return Boolean(instruction && instruction.type !== 'destination' && !isGpsGuidedInstruction(instruction));
 }
 
 function findStateIndex(key: IeumStateKey) {
@@ -282,3 +373,4 @@ export function shouldOpenRequestPanel(key: IeumStateKey, tapCount: number) {
 export function allowsHelperMapMode(key: IeumStateKey) {
   return ['WALK_GUIDANCE', 'ENTERING_STATION', 'EXITING_STATION'].includes(key);
 }
+import { RouteInstruction } from '@/services/route-api';

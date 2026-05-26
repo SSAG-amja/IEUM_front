@@ -1,25 +1,31 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 import { IeumColors } from '@/constants/theme';
+import { RouteInstruction } from '@/services/route-api';
 
-const STOPS = ['강남', '역삼', '선릉', '교대'];
+export function TrainLineVisual({ instruction }: { instruction?: RouteInstruction }) {
+  const from = instruction?.from_station ?? '출발역';
+  const to = instruction?.to_station ?? '도착역';
+  const lineName = instruction?.line_code
+    ? instruction.line_code.endsWith('선')
+      ? instruction.line_code
+      : `${instruction.line_code}호선`
+    : '지하철';
 
-export function TrainLineVisual() {
   return (
     <View style={styles.card}>
-      <Text style={styles.heading}>🚇  열차 진행도</Text>
+      <Text style={styles.heading}>{lineName} 이용</Text>
       <View style={styles.track}>
         <View style={styles.trackBackground} />
         <View style={styles.trackProgress} />
-        {STOPS.map((stop, index) => (
-          <View key={stop} style={styles.stop}>
-            <View style={[styles.dot, index === STOPS.length - 1 && styles.destinationDot]} />
-            <Text style={[styles.stopName, index === STOPS.length - 1 && styles.destinationName]}>
-              {stop}
-            </Text>
+        {[from, to].map((stop, index) => (
+          <View key={`${stop}-${index}`} style={styles.stop}>
+            <View style={[styles.dot, index === 1 && styles.destinationDot]} />
+            <Text style={[styles.stopName, index === 1 && styles.destinationName]}>{stop}</Text>
           </View>
         ))}
       </View>
+      <Text style={styles.instructionText}>{instruction?.text ?? '열차 이동 안내를 확인합니다.'}</Text>
     </View>
   );
 }
@@ -47,7 +53,7 @@ const styles = StyleSheet.create({
   trackProgress: {
     position: 'absolute',
     left: 16,
-    right: 56,
+    right: 16,
     top: 12,
     height: 4,
     borderRadius: 4,
@@ -65,4 +71,5 @@ const styles = StyleSheet.create({
   destinationDot: { backgroundColor: IeumColors.mint },
   stopName: { fontSize: 10, fontWeight: '700', color: '#9CA7B7' },
   destinationName: { color: '#B8F1CE' },
+  instructionText: { color: '#C7D0DE', fontSize: 12, lineHeight: 18, marginTop: 13 },
 });

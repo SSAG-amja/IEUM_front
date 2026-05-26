@@ -1,30 +1,27 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import { MapPosition, MapVisual } from '@/components/ieum/map-visual';
+import { MapVisual } from '@/components/ieum/map-visual';
 import { StationVisual } from '@/components/ieum/station-visual';
 import { TrainLineVisual } from '@/components/ieum/train-line-visual';
 import { IeumState } from '@/constants/ieum-prototype';
+import { Coordinate, RouteInstruction, RouteResponse } from '@/services/route-api';
 
 type GuidanceVisualProps = {
   state: IeumState;
-  candidatePreviewIndex?: number;
   helperMode: boolean;
-  mapPan: MapPosition;
-  mapZoom: number;
-  onPan: (dx: number, dy: number) => void;
-  onPinch: (scaleChange: number) => void;
+  currentLocation?: Coordinate | null;
+  route?: RouteResponse | null;
+  instruction?: RouteInstruction;
   onMapTripleTap: () => void;
   onOpenFullscreen: () => void;
 };
 
 export function GuidanceVisual({
   state,
-  candidatePreviewIndex,
   helperMode,
-  mapPan,
-  mapZoom,
-  onPan,
-  onPinch,
+  currentLocation,
+  route,
+  instruction,
   onMapTripleTap,
   onOpenFullscreen,
 }: GuidanceVisualProps) {
@@ -32,12 +29,9 @@ export function GuidanceVisual({
     return (
       <MapVisual
         title={state.mapTitle}
-        candidatePreviewIndex={candidatePreviewIndex}
         helperMode={helperMode}
-        pan={mapPan}
-        zoom={mapZoom}
-        onPan={onPan}
-        onPinch={onPinch}
+        currentLocation={currentLocation}
+        route={route}
         onTripleTap={onMapTripleTap}
         onOpenFullscreen={onOpenFullscreen}
       />
@@ -45,11 +39,11 @@ export function GuidanceVisual({
   }
 
   if (state.visual === 'station') {
-    return <StationVisual helperMode={helperMode} />;
+    return <StationVisual helperMode={helperMode} instruction={instruction} />;
   }
 
   if (state.visual === 'trainLine') {
-    return <TrainLineVisual />;
+    return <TrainLineVisual instruction={instruction} />;
   }
 
   return (

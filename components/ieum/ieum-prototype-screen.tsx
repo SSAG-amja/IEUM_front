@@ -1,7 +1,7 @@
 import * as Speech from 'expo-speech';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Keyboard, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -12,39 +12,102 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { GuidanceVisual } from '@/components/ieum/guidance-visual';
 import { ActionLine, Pill } from '@/components/ieum/ieum-ui';
-import { MapPosition, MapVisual } from '@/components/ieum/map-visual';
+import { MapVisual } from '@/components/ieum/map-visual';
 import {
   allowsHelperMapMode,
   COMMANDS,
   DESTINATION_CANDIDATES,
   getNextIndex,
+  getRouteInstructionViewState,
   getViewState,
   IEUM_STATES,
+  isGpsGuidedInstruction,
+  requiresGuidanceConfirmation,
   shouldOpenRequestPanel,
   TOUCH_ACTIONS,
 } from '@/constants/ieum-prototype';
 import { IeumColors } from '@/constants/theme';
 import { useMutedGuidanceHaptics } from '@/hooks/use-muted-guidance-haptics';
 import { useTapSequence } from '@/hooks/use-tap-sequence';
+import { Coordinate, requestAccessibleRoute, RouteResponse } from '@/services/route-api';
 
 export function IeumPrototypeScreen() {
   const [index, setIndex] = useState(0);
   const [candidateIndex, setCandidateIndex] = useState(0);
+  const [originQuery, setOriginQuery] = useState('시청역');
+  const [destinationQuery, setDestinationQuery] = useState('강남역');
   const [showRequestPanel, setShowRequestPanel] = useState(false);
   const [helperMode, setHelperMode] = useState(false);
   const [mapFullscreen, setMapFullscreen] = useState(false);
   const [showHelperReminder, setShowHelperReminder] = useState(false);
-  const [mapPan, setMapPan] = useState<MapPosition>({ x: 0, y: 0 });
-  const [mapZoom, setMapZoom] = useState(1);
+  const [currentLocation, setCurrentLocation] = useState<Coordinate | null>(null);
+  const [route, setRoute] = useState<RouteResponse | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [guidanceStepIndex, setGuidanceStepIndex] = useState(0);
   const announceAutoTrackingReturn = useRef(false);
   const transitionProgress = useSharedValue(1);
 
   const state = IEUM_STATES[index];
-  const viewState = getViewState(state, candidateIndex);
-  const actions = TOUCH_ACTIONS[state.key];
-  const progress = useMemo(() => `${Math.round(((index + 1) / IEUM_STATES.length) * 100)}%` as const, [index]);
-  const transitionKey = `${viewState.key}-${candidateIndex}-${helperMode}`;
-  const helperMapAvailable = allowsHelperMapMode(state.key);
+  const baseViewState = getViewState(state, candidateIndex, originQuery, destinationQuery);
+  const routeInstructions = useMemo(
+    () => route?.instructions.filter((instruction) => instruction.type !== 'route_start') ?? [],
+    [route]
+  );
+  const activeInstruction =
+    state.key === 'WALK_GUIDANCE' ? routeInstructions[guidanceStepIndex] : undefined;
+  const instructionViewState = activeInstruction
+    ? getRouteInstructionViewState(
+        activeInstruction,
+        guidanceStepIndex,
+        routeInstructions.length,
+        routeInstructions[guidanceStepIndex - 1]
+      )
+    : null;
+  const viewState =
+    route && state.key === 'BUILDING_ROUTE'
+      ? {
+          ...baseViewState,
+          phase: '경로 계산 완료',
+          main: '안전 경로를 찾았습니다',
+          sub: `총 ${Math.round(route.summary.total_length_m)}m · ${route.summary.uses_subway ? '지하철 포함' : '도보 경로'} · 환승 ${route.summary.transfer_count}회`,
+          tts: `${destinationQuery}까지 접근성 경로를 찾았습니다. 안내를 시작하려면 화면을 두 번 터치해주세요.`,
+          chip: 'Safety-first',
+        }
+      : routeError && state.key === 'BUILDING_ROUTE'
+        ? {
+            ...baseViewState,
+            phase: '경로 탐색 실패',
+            main: '경로를 찾지 못했습니다',
+            sub: routeError,
+            tts: '경로를 찾지 못했습니다. 입력을 확인한 뒤 다시 계산해주세요.',
+            chip: '다시 시도',
+          }
+      : instructionViewState ?? baseViewState;
+  const baseActions = TOUCH_ACTIONS[state.key];
+  const actions =
+    instructionViewState?.key === 'ARRIVED'
+      ? { two: '새 목적지 입력', three: '요청 메뉴', four: null }
+      : requiresGuidanceConfirmation(activeInstruction)
+        ? { two: '현재 안내 다시 듣기', three: '음성 명령', four: '이동 완료 확인 / 다음 안내' }
+        : instructionViewState
+        ? {
+            two: '현재 안내 다시 듣기',
+            three: instructionViewState.visual === 'map' ? '음성 명령 / 주변 도움 모드' : '음성 명령',
+            four: null,
+          }
+        : state.key === 'BUILDING_ROUTE' && route
+      ? { ...baseActions, two: '안내 시작' }
+      : state.key === 'BUILDING_ROUTE' && routeError
+        ? { ...baseActions, two: '다시 계산' }
+        : baseActions;
+  const progress = instructionViewState
+    ? `${Math.round(((guidanceStepIndex + 1) / routeInstructions.length) * 100)}%` as const
+    : `${Math.round(((index + 1) / IEUM_STATES.length) * 100)}%` as const;
+  const transitionKey = `${viewState.key}-${candidateIndex}-${guidanceStepIndex}-${helperMode}`;
+  const helperMapAvailable = instructionViewState
+    ? isGpsGuidedInstruction(activeInstruction) && instructionViewState.key !== 'ARRIVED'
+    : allowsHelperMapMode(state.key);
   const visibleCommands = helperMapAvailable
     ? COMMANDS
     : COMMANDS.filter((command) => command.label !== '주변 도움 모드');
@@ -74,15 +137,47 @@ export function IeumPrototypeScreen() {
     setHelperMode(false);
     setMapFullscreen(false);
     setShowHelperReminder(false);
-    setMapPan({ x: 0, y: 0 });
-    setMapZoom(1);
   };
+
+  const calculateRoute = useCallback(async () => {
+    if (!originQuery.trim()) {
+      setRouteError('출발지를 입력해주세요.');
+      return;
+    }
+    if (!destinationQuery.trim()) {
+      setRouteError('목적지를 입력해주세요.');
+      return;
+    }
+    setRouteLoading(true);
+    setRouteError(null);
+    try {
+      Keyboard.dismiss();
+      const nextRoute = await requestAccessibleRoute(originQuery.trim(), destinationQuery.trim());
+      setCurrentLocation({
+        latitude: nextRoute.summary.start.lat,
+        longitude: nextRoute.summary.start.lon,
+      });
+      setGuidanceStepIndex(0);
+      setRoute(nextRoute);
+    } catch (error) {
+      setRoute(null);
+      setRouteError(error instanceof Error ? error.message : '경로를 계산하지 못했습니다.');
+    } finally {
+      setRouteLoading(false);
+    }
+  }, [destinationQuery, originQuery]);
 
   const moveToIndex = (nextIndex: number) => {
     setShowRequestPanel(false);
     setIndex(nextIndex);
     if (!allowsHelperMapMode(IEUM_STATES[nextIndex].key)) {
       setAutoTrackingMode();
+    }
+  };
+
+  const advanceGuidanceStep = () => {
+    if (guidanceStepIndex < routeInstructions.length - 1) {
+      setGuidanceStepIndex((previous) => previous + 1);
     }
   };
 
@@ -95,7 +190,24 @@ export function IeumPrototypeScreen() {
 
     if (count === 3 && state.key === 'CANDIDATE_CONFIRMATION') {
       setShowRequestPanel(false);
-      setCandidateIndex((previous) => (previous + 1) % DESTINATION_CANDIDATES.length);
+      if (destinationQuery.trim()) {
+        moveToIndex(IEUM_STATES.findIndex((item) => item.key === 'WAIT_DESTINATION_INPUT'));
+      } else {
+        setCandidateIndex((previous) => (previous + 1) % DESTINATION_CANDIDATES.length);
+      }
+      return;
+    }
+
+    if (instructionViewState?.key === 'ARRIVED' && count === 2) {
+      setRoute(null);
+      setCurrentLocation(null);
+      setGuidanceStepIndex(0);
+      moveToIndex(IEUM_STATES.findIndex((item) => item.key === 'WAIT_DESTINATION_INPUT'));
+      return;
+    }
+
+    if (requiresGuidanceConfirmation(activeInstruction) && count === 4) {
+      advanceGuidanceStep();
       return;
     }
 
@@ -105,6 +217,16 @@ export function IeumPrototypeScreen() {
     }
 
     const nextIndex = getNextIndex(index, count);
+    if (state.key === 'CANDIDATE_CONFIRMATION' && count === 2) {
+      setRoute(null);
+      setRouteError(null);
+    }
+    if (state.key === 'BUILDING_ROUTE' && count === 2 && !route) {
+      if (!routeLoading) {
+        void calculateRoute();
+      }
+      return;
+    }
     if (nextIndex !== index) {
       moveToIndex(nextIndex);
     } else if (count === 2) {
@@ -116,10 +238,20 @@ export function IeumPrototypeScreen() {
   };
 
   const { registerTap: registerScreenTap, cancelPendingSequence } = useTapSequence(handleTapAction);
+  const handleScreenPress = () => {
+    Keyboard.dismiss();
+    registerScreenTap();
+  };
   const handleMapTripleTap = () => {
     cancelPendingSequence();
     handleTapAction(3);
   };
+
+  useEffect(() => {
+    if (state.key === 'BUILDING_ROUTE' && !route && !routeLoading && !routeError) {
+      void calculateRoute();
+    }
+  }, [calculateRoute, route, routeError, routeLoading, state.key]);
 
   useEffect(() => {
     if (helperMode) {
@@ -181,17 +313,8 @@ export function IeumPrototypeScreen() {
     ],
   }));
 
-  const handlePinch = (scaleChange: number) => {
-    if (!helperMode) {
-      return;
-    }
-    setMapZoom((previous) =>
-      Math.max(0.75, Math.min(1.75, Number((previous * scaleChange).toFixed(3))))
-    );
-  };
-
   return (
-    <Pressable style={styles.screen} onPress={registerScreenTap} accessible={false}>
+    <Pressable style={styles.screen} onPress={handleScreenPress} accessible={false}>
       <SafeAreaView style={styles.safeArea}>
         <LinearGradient
           pointerEvents="none"
@@ -216,16 +339,16 @@ export function IeumPrototypeScreen() {
             </View>
             <View style={styles.headerActions}>
               <Pill>{viewState.phase}</Pill>
-              {state.key === 'WALK_GUIDANCE' && (
+              {isGpsGuidedInstruction(activeInstruction) && (
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="역 입구 도착 시뮬레이션"
-                  style={styles.qaButton}
+                  accessibilityLabel="GPS 자동 이동 시뮬레이션"
+                  style={styles.gpsAdvanceButton}
                   onPress={(event) => {
                     event.stopPropagation();
-                    moveToIndex(IEUM_STATES.findIndex((item) => item.key === 'ENTERING_STATION'));
+                    advanceGuidanceStep();
                   }}>
-                  <Text style={styles.qaButtonText}>QA</Text>
+                  <Text style={styles.gpsAdvanceButtonText}>GPS 이동</Text>
                 </Pressable>
               )}
             </View>
@@ -237,18 +360,41 @@ export function IeumPrototypeScreen() {
 
           <Animated.View style={[styles.animatedBody, transitionStyle]}>
             <View style={styles.mainContent}>
+              {(state.key === 'WAIT_DESTINATION_INPUT' || state.key === 'LISTENING_DESTINATION') && (
+                <View style={styles.destinationCard}>
+                  <Text style={styles.destinationLabel}>출발지 (개발용 입력)</Text>
+                  <TextInput
+                    accessibilityLabel="출발지 입력"
+                    value={originQuery}
+                    onChangeText={setOriginQuery}
+                    onPressIn={(event) => event.stopPropagation()}
+                    onSubmitEditing={() => Keyboard.dismiss()}
+                    placeholder="예: 시청역 또는 126.977088,37.565715"
+                    placeholderTextColor={IeumColors.textMuted}
+                    returnKeyType="done"
+                    style={styles.destinationInput}
+                  />
+                  <Text style={styles.destinationLabel}>목적지</Text>
+                  <TextInput
+                    accessibilityLabel="목적지 입력"
+                    value={destinationQuery}
+                    onChangeText={setDestinationQuery}
+                    onPressIn={(event) => event.stopPropagation()}
+                    onSubmitEditing={() => Keyboard.dismiss()}
+                    placeholder="예: 강남역"
+                    placeholderTextColor={IeumColors.textMuted}
+                    returnKeyType="done"
+                    style={styles.destinationInput}
+                  />
+                  <Text style={styles.destinationHint}>서울 내 역명 또는 경도,위도 좌표로 접근성 경로를 테스트합니다.</Text>
+                </View>
+              )}
               <GuidanceVisual
                 state={viewState}
-                candidatePreviewIndex={state.key === 'CANDIDATE_CONFIRMATION' ? candidateIndex : undefined}
                 helperMode={helperMode && helperMapAvailable}
-                mapPan={mapPan}
-                mapZoom={mapZoom}
-                onPan={(dx, dy) => {
-                  if (helperMode) {
-                    setMapPan((previous) => ({ x: previous.x + dx, y: previous.y + dy }));
-                  }
-                }}
-                onPinch={handlePinch}
+                currentLocation={currentLocation}
+                route={route}
+                instruction={activeInstruction}
                 onMapTripleTap={handleMapTripleTap}
                 onOpenFullscreen={() => setMapFullscreen(true)}
               />
@@ -267,17 +413,50 @@ export function IeumPrototypeScreen() {
                   {viewState.tts}
                 </Text>
               </View>
+              {state.key === 'BUILDING_ROUTE' && routeLoading && (
+                <View style={styles.routeStatus}>
+                  <ActivityIndicator color={IeumColors.cyan} />
+                  <Text style={styles.routeStatusText}>입력한 출발지에서 경로를 계산 중입니다.</Text>
+                </View>
+              )}
+              {state.key === 'BUILDING_ROUTE' && routeError && (
+                <View style={styles.routeError}>
+                  <Text style={styles.routeErrorText}>{routeError}</Text>
+                  <Pressable style={styles.retryButton} onPress={() => void calculateRoute()}>
+                    <Text style={styles.retryButtonText}>다시 계산</Text>
+                  </Pressable>
+                </View>
+              )}
+              {route && state.key === 'BUILDING_ROUTE' && (
+                <View style={styles.routeSteps}>
+                  {routeInstructions.slice(0, 3).map((instruction, stepIndex) => (
+                    <Text key={`${instruction.type}-${stepIndex}`} style={styles.routeStepText} numberOfLines={2}>
+                      {stepIndex + 1}. {instruction.text}
+                    </Text>
+                  ))}
+                </View>
+              )}
             </View>
 
             <View style={styles.actions}>
               <ActionLine count={2} label={actions.two} />
               <ActionLine count={3} label={helperMode ? '자동 안내로 복귀' : actions.three} />
-              <ActionLine
-                count={4}
-                label={actions.four ?? '이 상태에서는 사용하지 않음'}
-                muted={!actions.four}
-              />
-              <Text style={styles.instructions}>화면 전체를 빠르게 2번, 3번, 4번 터치해서 조작합니다</Text>
+              {(!activeInstruction || requiresGuidanceConfirmation(activeInstruction)) && (
+                <ActionLine
+                  count={4}
+                  label={actions.four ?? '이 상태에서는 사용하지 않음'}
+                  muted={!actions.four}
+                />
+              )}
+              <Text style={styles.instructions}>
+                {instructionViewState?.key === 'ARRIVED'
+                  ? '새 목적지 안내를 시작하려면 화면을 빠르게 2번 터치하세요'
+                  : isGpsGuidedInstruction(activeInstruction)
+                  ? '실외 구간은 GPS 이동 버튼으로 자동 진행을 시뮬레이션합니다'
+                  : requiresGuidanceConfirmation(activeInstruction)
+                    ? '다시 듣기는 2번, 이동 완료 확인은 화면을 빠르게 4번 터치하세요'
+                    : '화면 전체를 빠르게 2번, 3번, 4번 터치해서 조작합니다'}
+              </Text>
             </View>
           </Animated.View>
         </View>
@@ -333,16 +512,14 @@ export function IeumPrototypeScreen() {
           visible={mapFullscreen && helperMode}
           animationType="fade"
           onRequestClose={() => setMapFullscreen(false)}>
-          <Pressable style={styles.fullscreenRoot} onPress={registerScreenTap} accessible={false}>
+          <Pressable style={styles.fullscreenRoot} onPress={handleScreenPress} accessible={false}>
             <SafeAreaView style={styles.fullscreenSafeArea}>
               <MapVisual
                 title="주변 도움 지도"
                 fullscreen
                 helperMode
-                pan={mapPan}
-                zoom={mapZoom}
-                onPan={(dx, dy) => setMapPan((previous) => ({ x: previous.x + dx, y: previous.y + dy }))}
-                onPinch={handlePinch}
+                currentLocation={currentLocation}
+                route={route}
                 onTripleTap={handleMapTripleTap}
                 onCloseFullscreen={() => setMapFullscreen(false)}
               />
@@ -377,15 +554,15 @@ const styles = StyleSheet.create({
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   logoCaption: { color: '#8491A4', fontSize: 11, letterSpacing: 4, fontWeight: '600' },
   logo: { color: IeumColors.text, fontSize: 19, lineHeight: 28, fontWeight: '700' },
-  qaButton: {
+  gpsAdvanceButton: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#38516D',
-    backgroundColor: '#16283A',
-    paddingHorizontal: 9,
+    borderColor: '#276C86',
+    backgroundColor: '#153743',
+    paddingHorizontal: 10,
     paddingVertical: 7,
   },
-  qaButtonText: { color: '#7FB8E4', fontSize: 11, fontWeight: '800' },
+  gpsAdvanceButtonText: { color: IeumColors.cyan, fontSize: 11, fontWeight: '800' },
   progressTrack: { height: 5, backgroundColor: '#273141', borderRadius: 10, marginTop: 10, overflow: 'hidden' },
   progressValue: { height: 6, backgroundColor: '#EEF2F7', borderRadius: 10 },
   animatedBody: { flex: 1 },
@@ -418,6 +595,53 @@ const styles = StyleSheet.create({
   },
   ttsHeading: { color: '#E1E5EB', fontWeight: '700', fontSize: 12 },
   ttsText: { color: '#B7C0CE', fontSize: 12, lineHeight: 17, marginTop: 5 },
+  destinationCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: IeumColors.border,
+    backgroundColor: IeumColors.card,
+    padding: 12,
+    marginBottom: 10,
+  },
+  destinationLabel: { color: IeumColors.textSecondary, fontSize: 12, fontWeight: '700', marginBottom: 6, marginTop: 8 },
+  destinationInput: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#3A485C',
+    color: IeumColors.text,
+    backgroundColor: IeumColors.cardStrong,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 16,
+  },
+  destinationHint: { color: IeumColors.textMuted, fontSize: 11, marginTop: 7 },
+  routeStatus: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    justifyContent: 'center',
+  },
+  routeStatusText: { color: IeumColors.textSecondary, fontSize: 12 },
+  routeError: { marginTop: 10, alignItems: 'center', gap: 8 },
+  routeErrorText: { color: '#FF9C95', fontSize: 12, textAlign: 'center' },
+  retryButton: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#38516D',
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  retryButtonText: { color: IeumColors.cyan, fontSize: 12, fontWeight: '700' },
+  routeSteps: {
+    marginTop: 8,
+    borderRadius: 12,
+    backgroundColor: '#111D2D',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    gap: 4,
+  },
+  routeStepText: { color: '#C7D0DE', fontSize: 11, lineHeight: 15 },
   modalRoot: { flex: 1, justifyContent: 'flex-end' },
   modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(3, 7, 13, 0.68)' },
   requestCard: {
