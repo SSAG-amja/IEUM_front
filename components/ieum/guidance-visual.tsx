@@ -1,13 +1,11 @@
-import { StyleSheet, Text, View } from 'react-native';
-
 import { MapVisual } from '@/components/ieum/map-visual';
 import { StationVisual } from '@/components/ieum/station-visual';
 import { TrainLineVisual } from '@/components/ieum/train-line-visual';
-import { IeumState } from '@/constants/ieum-prototype';
+import { GuidancePresentation } from '@/features/ieum/guidance/instruction-presenter';
 import { Coordinate, RouteInstruction, RouteResponse } from '@/services/route-api';
 
 type GuidanceVisualProps = {
-  state: IeumState;
+  state: GuidancePresentation;
   helperMode: boolean;
   currentLocation?: Coordinate | null;
   route?: RouteResponse | null;
@@ -46,26 +44,5 @@ export function GuidanceVisual({
     return <TrainLineVisual instruction={instruction} />;
   }
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.circle}>
-        <Text style={styles.icon}>{state.icon}</Text>
-      </View>
-    </View>
-  );
+  return null;
 }
-
-const styles = StyleSheet.create({
-  container: { alignItems: 'center', paddingVertical: 18 },
-  circle: {
-    height: 96,
-    width: 96,
-    borderRadius: 48,
-    borderWidth: 1,
-    borderColor: '#344052',
-    backgroundColor: '#1B2534',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  icon: { fontSize: 42 },
-});

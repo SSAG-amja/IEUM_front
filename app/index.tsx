@@ -1,5 +1,5 @@
-import { IeumPrototypeScreen } from '@/components/ieum/ieum-prototype-screen';
+import { StartScreen } from '@/features/ieum/start/start-screen';
 
 export default function HomeScreen() {
-  return <IeumPrototypeScreen />;
+  return <StartScreen />;
 }
