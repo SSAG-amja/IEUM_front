@@ -51,3 +51,17 @@ export const Fonts = Platform.select({
     mono: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
   },
 });
+
+export const IeumColors = {
+  page: '#080D14',
+  surface: '#101827',
+  card: '#121B29',
+  cardStrong: '#0C1523',
+  border: '#293445',
+  text: '#FFFFFF',
+  textSecondary: '#AEB7C5',
+  textMuted: '#758296',
+  cyan: '#69DDEB',
+  mint: '#7BDEA0',
+  amber: '#F7D88C',
+} as const;
