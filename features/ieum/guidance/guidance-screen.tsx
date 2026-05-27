@@ -1,4 +1,3 @@
-import * as Speech from 'expo-speech';
 import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -17,6 +16,10 @@ import { useTapSequence } from '@/hooks/use-tap-sequence';
 
 const COMMANDS = ['현재 안내', '주변 도움 모드', '엘리베이터', '화장실'] as const;
 const DESTINATION_ROUTE = '/destination' as Href;
+const HELPER_MODE_ANNOUNCEMENT_INTERVAL_MS = 20000;
+const HELPER_MODE_ANNOUNCEMENT =
+  '주변 도움 모드입니다. 지도를 직접 확인할 수 있습니다. 화면을 세 번 터치하면 자동 안내로 돌아갑니다.';
+const HELPER_MODE_EXIT_ANNOUNCEMENT = '주변 도움 모드가 비활성화되었습니다. 자동 안내로 돌아갑니다.';
 
 export function GuidanceScreen() {
   const router = useRouter();
@@ -28,6 +31,7 @@ export function GuidanceScreen() {
   const [helperMode, setHelperMode] = useState(false);
   const [mapFullscreen, setMapFullscreen] = useState(false);
   const [showRequestPanel, setShowRequestPanel] = useState(false);
+  const [suppressReturnedStepAnnouncement, setSuppressReturnedStepAnnouncement] = useState(false);
 
   useEffect(() => {
     if (!route) {
@@ -42,12 +46,39 @@ export function GuidanceScreen() {
     }
   }, [controller.isGpsGuided]);
 
-  useAnnouncement(controller.presentation?.tts ?? '', Boolean(controller.presentation && !helperMode));
+  useEffect(() => {
+    setSuppressReturnedStepAnnouncement(false);
+  }, [controller.stepIndex]);
+
+  useAnnouncement(
+    controller.presentation?.tts ?? '',
+    Boolean(controller.presentation && !helperMode && !suppressReturnedStepAnnouncement)
+  );
+  useEffect(() => {
+    if (!helperMode) {
+      return;
+    }
+
+    repeatAnnouncement(HELPER_MODE_ANNOUNCEMENT);
+    const interval = setInterval(() => {
+      repeatAnnouncement(HELPER_MODE_ANNOUNCEMENT);
+    }, HELPER_MODE_ANNOUNCEMENT_INTERVAL_MS);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [helperMode]);
+
+  const exitHelperMode = () => {
+    setSuppressReturnedStepAnnouncement(true);
+    setHelperMode(false);
+    setMapFullscreen(false);
+    repeatAnnouncement(HELPER_MODE_EXIT_ANNOUNCEMENT);
+  };
+
   const handleTap = (count: number) => {
     if (helperMode && count === 3) {
-      setHelperMode(false);
-      setMapFullscreen(false);
-      repeatAnnouncement(`자동 안내로 돌아갑니다. ${controller.presentation?.tts ?? ''}`);
+      exitHelperMode();
       return;
     }
     if (controller.isArrived && count === 2) {
@@ -176,6 +207,7 @@ export function GuidanceScreen() {
                   style={styles.command}
                   onPress={() => {
                     if (command === '주변 도움 모드') {
+                      setSuppressReturnedStepAnnouncement(false);
                       setHelperMode(true);
                       setShowRequestPanel(false);
                     }
@@ -197,9 +229,7 @@ export function GuidanceScreen() {
             currentLocation={currentLocation}
             route={route}
             onTripleTap={() => {
-              setHelperMode(false);
-              setMapFullscreen(false);
-              Speech.stop();
+              exitHelperMode();
             }}
             onCloseFullscreen={() => setMapFullscreen(false)}
           />
