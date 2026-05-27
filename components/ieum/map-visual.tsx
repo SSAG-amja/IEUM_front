@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { Keyboard, Pressable, StyleSheet, Text, View } from 'react-native';
-import MapView, { type Camera, Marker, Polyline } from 'react-native-maps';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { Keyboard, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import MapView, { type Camera, Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 
 import { Pill } from '@/components/ieum/ieum-ui';
 import { IeumColors } from '@/constants/theme';
@@ -25,7 +25,7 @@ const SEOUL_REGION = {
   longitudeDelta: 0.16,
 };
 const MAP_TAP_SEQUENCE_DELAY_MS = 700;
-const DOUBLE_TAP_ZOOM_BLOCK_MS = 1000;
+const DOUBLE_TAP_ZOOM_BLOCK_MS = 1200;
 
 function coordinatesOf(feature: RouteFeature) {
   return feature.geometry.coordinates.map(([longitude, latitude]) => ({ latitude, longitude }));
@@ -75,11 +75,14 @@ export function MapVisual({
     [route]
   );
 
-  useEffect(() => {
+  const focusRouteOrLocation = useCallback(() => {
+    if (!isMapReadyRef.current) {
+      return;
+    }
     if (routeCoordinates.length > 1) {
       mapRef.current?.fitToCoordinates(routeCoordinates, {
         edgePadding: { top: 60, right: 40, bottom: 60, left: 40 },
-        animated: true,
+        animated: false,
       });
       return;
     }
@@ -94,6 +97,10 @@ export function MapVisual({
       );
     }
   }, [currentLocation, routeCoordinates]);
+
+  useEffect(() => {
+    focusRouteOrLocation();
+  }, [focusRouteOrLocation]);
 
   const rememberCurrentCamera = () => {
     const map = mapRef.current;
@@ -115,7 +122,7 @@ export function MapVisual({
     if (!isMapReadyRef.current || !map) {
       return;
     }
-    if (helperMode && Date.now() < blockDoubleTapZoomUntilRef.current && stableCameraRef.current) {
+    if (Date.now() < blockDoubleTapZoomUntilRef.current && stableCameraRef.current) {
       map.setCamera(stableCameraRef.current);
       return;
     }
@@ -123,15 +130,14 @@ export function MapVisual({
   };
 
   const handleDoublePress = () => {
-    if (!helperMode) {
-      return;
-    }
     blockDoubleTapZoomUntilRef.current = Date.now() + DOUBLE_TAP_ZOOM_BLOCK_MS;
     if (stableCameraRef.current) {
       mapRef.current?.setCamera(stableCameraRef.current);
     }
-    registerTap();
-    registerTap();
+    if (helperMode) {
+      registerTap();
+      registerTap();
+    }
   };
 
   const destination = route?.summary.end;
@@ -157,14 +163,16 @@ export function MapVisual({
         <MapView
           ref={mapRef}
           style={styles.map}
+          provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
           initialRegion={SEOUL_REGION}
-          scrollEnabled={helperMode}
-          pitchEnabled={helperMode}
-          rotateEnabled={helperMode}
-          zoomEnabled={helperMode}
+          scrollEnabled
+          pitchEnabled
+          rotateEnabled
+          zoomEnabled
           toolbarEnabled={false}
           onMapReady={() => {
             isMapReadyRef.current = true;
+            focusRouteOrLocation();
             rememberCurrentCamera();
           }}
           onDoublePress={handleDoublePress}
