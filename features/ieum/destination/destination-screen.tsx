@@ -9,7 +9,7 @@ import {
 } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, Keyboard, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { ActionLine, Pill } from '@/components/ieum/ieum-ui';
 import { MapVisual } from '@/components/ieum/map-visual';
@@ -23,27 +23,51 @@ import { repeatAnnouncement, useAnnouncement } from '@/features/ieum/shared/use-
 type DestinationPhase = 'input' | 'candidate' | 'building';
 const GUIDANCE_ROUTE = '/guidance' as Href;
 const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
-const WAV_RECORDING_OPTIONS: RecordingOptions = {
-  extension: '.wav',
-  sampleRate: 44100,
-  numberOfChannels: 1,
-  bitRate: 128000,
-  android: {
-    outputFormat: 'default',
-    audioEncoder: 'default',
-  },
-  ios: {
-    outputFormat: IOSOutputFormat.LINEARPCM,
-    audioQuality: AudioQuality.MAX,
-    linearPCMBitDepth: 16,
-    linearPCMIsBigEndian: false,
-    linearPCMIsFloat: false,
-  },
-  web: {
-    mimeType: 'audio/wav',
-    bitsPerSecond: 128000,
-  },
-};
+const DESTINATION_RECORDING_OPTIONS: RecordingOptions =
+  Platform.OS === 'ios'
+    ? {
+        extension: '.wav',
+        sampleRate: 44100,
+        numberOfChannels: 1,
+        bitRate: 128000,
+        ios: {
+          outputFormat: IOSOutputFormat.LINEARPCM,
+          audioQuality: AudioQuality.MAX,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+        web: {
+          mimeType: 'audio/wav',
+          bitsPerSecond: 128000,
+        },
+      }
+    : {
+        // Android default encoder usually produces AAC/MPEG-4 data, so upload it with a matching extension.
+        extension: '.m4a',
+        sampleRate: 44100,
+        numberOfChannels: 1,
+        bitRate: 128000,
+        android: {
+          outputFormat: 'default',
+          audioEncoder: 'default',
+        },
+        web: {
+          mimeType: 'audio/webm',
+          bitsPerSecond: 128000,
+        },
+      };
+
+function guessAudioUpload(uri: string) {
+  const normalized = uri.toLowerCase();
+  if (normalized.endsWith('.wav')) {
+    return { name: 'destination.wav', type: 'audio/wav' };
+  }
+  if (normalized.endsWith('.webm')) {
+    return { name: 'destination.webm', type: 'audio/webm' };
+  }
+  return { name: 'destination.m4a', type: 'audio/mp4' };
+}
 
 export function DestinationScreen() {
   const router = useRouter();
@@ -62,7 +86,7 @@ export function DestinationScreen() {
   const [sttRecording, setSttRecording] = useState(false);
   const [sttStatus, setSttStatus] = useState<string | null>(null);
   const [speechPrompt, setSpeechPrompt] = useState<string | null>(null);
-  const recorder = useAudioRecorder(WAV_RECORDING_OPTIONS);
+  const recorder = useAudioRecorder(DESTINATION_RECORDING_OPTIONS);
   const flashValue = useRef(new Animated.Value(0)).current;
 
   const state = useMemo(() => {
@@ -144,14 +168,21 @@ export function DestinationScreen() {
     async (uri: string) => {
       try {
         setSttStatus('인식 중');
+        const upload = guessAudioUpload(uri);
         const formData = new FormData();
-        formData.append('file', { uri, name: 'destination.wav', type: 'audio/wav' } as any);
+        formData.append('file', { uri, name: upload.name, type: upload.type } as any);
         const sttRes = await fetch(`${API_URL}/api/v1/voice/destination`, { method: 'POST', body: formData });
         if (!sttRes.ok) {
-          throw new Error('음성 인식을 시작하지 못했습니다.');
+          let detail = '음성 인식을 시작하지 못했습니다.';
+          try {
+            const errorData = await sttRes.json();
+            if (typeof errorData?.detail === 'string' && errorData.detail.trim()) {
+              detail = errorData.detail;
+            }
+          } catch {}
+          throw new Error(detail);
         }
-        const finalizeRes = await fetch(`${API_URL}/finalize`, { method: 'POST' });
-        const data = await finalizeRes.json();
+        const data = await sttRes.json();
         const nextDestination = (data.destination || data.text || '').trim();
         setSpeechPrompt(data.prompt || null);
         if (nextDestination) {
@@ -183,7 +214,6 @@ export function DestinationScreen() {
     setSpeechPrompt(null);
     setSttStatus('마이크 요청 중');
     setError(null);
-    await fetch(`${API_URL}/reset`, { method: 'POST' }).catch(() => null);
     const permission = await requestRecordingPermissionsAsync();
     if (!permission.granted) {
       setSttStatus('마이크 권한이 필요합니다.');
