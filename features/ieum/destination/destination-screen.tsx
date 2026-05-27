@@ -437,88 +437,7 @@ export function DestinationScreen() {
     }
   }, [clearRoute, destinationQuery, originQuery, setRoute]);
 
-  const sendSttFile = useCallback(
-    async (uri: string) => {
-      try {
-        setSttStatus('인식 중');
-        const upload = guessAudioUpload(uri);
-        const formData = new FormData();
-        formData.append('file', { uri, name: upload.name, type: upload.type } as any);
-        const sttRes = await fetch(`${API_URL}/api/v1/voice/destination`, { method: 'POST', body: formData });
-        if (!sttRes.ok) {
-          let detail = '음성 인식을 시작하지 못했습니다.';
-          try {
-            const errorData = await sttRes.json();
-            if (typeof errorData?.detail === 'string' && errorData.detail.trim()) {
-              detail = errorData.detail;
-            }
-          } catch {}
-          throw new Error(detail);
-        }
-        const data = await sttRes.json();
-        const nextDestination = (data.destination || data.text || '').trim();
-        setSpeechPrompt(data.prompt || null);
-        if (nextDestination) {
-          setDestinationQuery(nextDestination);
-          clearRoute();
-        }
-        if (data.prompt) {
-          setPhase('input');
-          setSttStatus('추가 입력 대기');
-          return;
-        }
-        if (nextDestination) {
-          setPhase('candidate');
-          setSttStatus('입력 확인');
-          return;
-        }
-        setSttStatus('목적지 추출 실패');
-      } catch (cause) {
-        setSttStatus(cause instanceof Error ? cause.message : '음성 인식을 완료하지 못했습니다.');
-      }
-    },
-    [clearRoute, setDestinationQuery]
-  );
-
-  const startDestinationRecord = useCallback(async () => {
-    if (sttRecording) {
-      return;
-    }
-    setSpeechPrompt(null);
-    setSttStatus('마이크 요청 중');
-    setError(null);
-    const permission = await requestRecordingPermissionsAsync();
-    if (!permission.granted) {
-      setSttStatus('마이크 권한이 필요합니다.');
-      return;
-    }
-    await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-    await recorder.prepareToRecordAsync();
-    recorder.record();
-    setSttRecording(true);
-    setSttStatus('목적지 듣는 중');
-  }, [recorder, sttRecording]);
-
-  const stopDestinationRecord = useCallback(async () => {
-    setSttRecording(false);
-    setSttStatus('음성 입력 종료');
-    try {
-      await recorder.stop();
-      const uri = recorder.uri;
-      if (!uri) {
-        setSttStatus('녹음 파일이 없습니다.');
-        return;
-      }
-      await sendSttFile(uri);
-    } catch (cause) {
-      setSttStatus(cause instanceof Error ? cause.message : '녹음을 종료하지 못했습니다.');
-    }
-  }, [recorder, sendSttFile]);
-
   const handleTap = (count: number) => {
-    if (speechPrompt) {
-      setSpeechPrompt(null);
-    }
     if (count === 2 && phase === 'input') {
       Keyboard.dismiss();
       void promptAndStartVoiceRecording();
@@ -559,11 +478,6 @@ export function DestinationScreen() {
         : voiceCaptureStage === 'processing'
           ? '종료 신호음 · 확인 중'
           : '화면을 두 번 터치해 다시 입력';
-
-  const flashBackground = flashValue.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['rgba(0,0,0,0)', 'rgba(18,159,196,0.18)'],
-  });
 
   return (
     <ScreenFrame
@@ -628,7 +542,7 @@ export function DestinationScreen() {
         </View>
         <View style={styles.ttsCard}>
           <Text style={styles.ttsHeading}>현재 음성 안내</Text>
-          <Text style={styles.ttsText}>{ttsMessage}</Text>
+          <Text style={styles.ttsText}>{state.tts}</Text>
         </View>
         {loading && (
           <View style={styles.status}>
@@ -656,13 +570,10 @@ export function DestinationScreen() {
         <ActionLine count={3} label={phase === 'input' ? '도움말 듣기' : '입력 수정'} muted={phase === 'input'} />
       </View>
     </ScreenFrame>
-    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screenWrap: { flex: 1 },
-  flashOverlay: { ...StyleSheet.absoluteFillObject },
   body: { flex: 1, justifyContent: 'center' },
   inputCard: {
     borderRadius: 16,
