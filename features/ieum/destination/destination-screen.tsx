@@ -9,7 +9,7 @@ import {
 } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Keyboard, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { ActionLine, Pill } from '@/components/ieum/ieum-ui';
 import { MapVisual } from '@/components/ieum/map-visual';
@@ -23,40 +23,29 @@ import { repeatAnnouncement, useAnnouncement } from '@/features/ieum/shared/use-
 type DestinationPhase = 'input' | 'candidate' | 'building';
 const GUIDANCE_ROUTE = '/guidance' as Href;
 const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
-const DESTINATION_RECORDING_OPTIONS: RecordingOptions =
-  Platform.OS === 'ios'
-    ? {
-        extension: '.wav',
-        sampleRate: 44100,
-        numberOfChannels: 1,
-        bitRate: 128000,
-        ios: {
-          outputFormat: IOSOutputFormat.LINEARPCM,
-          audioQuality: AudioQuality.MAX,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-        web: {
-          mimeType: 'audio/wav',
-          bitsPerSecond: 128000,
-        },
-      }
-    : {
-        // Android default encoder usually produces AAC/MPEG-4 data, so upload it with a matching extension.
-        extension: '.m4a',
-        sampleRate: 44100,
-        numberOfChannels: 1,
-        bitRate: 128000,
-        android: {
-          outputFormat: 'default',
-          audioEncoder: 'default',
-        },
-        web: {
-          mimeType: 'audio/webm',
-          bitsPerSecond: 128000,
-        },
-      };
+const DESTINATION_RECORDING_OPTIONS: RecordingOptions = {
+  // Android default encoder usually produces AAC/MPEG-4 data, so upload it with a matching extension.
+  extension: '.m4a',
+  sampleRate: 44100,
+  numberOfChannels: 1,
+  bitRate: 128000,
+  android: {
+    outputFormat: 'default',
+    audioEncoder: 'default',
+  },
+  ios: {
+    extension: '.wav',
+    outputFormat: IOSOutputFormat.LINEARPCM,
+    audioQuality: AudioQuality.MAX,
+    linearPCMBitDepth: 16,
+    linearPCMIsBigEndian: false,
+    linearPCMIsFloat: false,
+  },
+  web: {
+    mimeType: 'audio/webm',
+    bitsPerSecond: 128000,
+  },
+};
 
 function guessAudioUpload(uri: string) {
   const normalized = uri.toLowerCase();
