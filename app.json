@@ -11,7 +11,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "이음이 목적지 음성 입력을 위해 마이크를 사용하도록 허용합니다."
+        "NSMicrophoneUsageDescription": "이음이 목적지 음성 입력을 위해 마이크를 사용하도록 허용합니다.",
+        "NSSpeechRecognitionUsageDescription": "이음이 목적지 음성을 텍스트로 변환하도록 허용합니다."
       }
     },
     "android": {
@@ -22,7 +23,14 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.IEUM",
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "output": "static",
@@ -53,11 +61,32 @@
         {
           "microphonePermission": "이음이 목적지 음성 입력을 위해 마이크를 사용하도록 허용합니다."
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "이음이 목적지 음성 입력을 위해 마이크를 사용하도록 허용합니다.",
+          "speechRecognitionPermission": "이음이 목적지 음성을 텍스트로 변환하도록 허용합니다."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "0ae07d05-21b8-4882-a611-2e94df5e3cf2"
+      }
     }
   }
 }

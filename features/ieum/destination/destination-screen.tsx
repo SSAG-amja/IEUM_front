@@ -1,14 +1,8 @@
 import { type Href, useRouter } from 'expo-router';
-import {
-  RecordingPresets,
-  requestRecordingPermissionsAsync,
-  setAudioModeAsync,
-  useAudioPlayer,
-  useAudioRecorder,
-  useAudioRecorderState,
-} from 'expo-audio';
+import { useAudioPlayer } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import * as Speech from 'expo-speech';
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -27,31 +21,12 @@ const GUIDANCE_ROUTE = '/guidance' as Href;
 const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
 const VOICE_DESTINATION_URL = `${API_URL}/api/v1/voice/destination`;
 const VOICE_PROMPT = '목적지를 말씀해주세요.';
-const SILENCE_TIMEOUT_MS = 1500;
-const NO_SPEECH_TIMEOUT_MS = 12000;
-const MAX_RECORDING_DURATION_MS = 30000;
-const SPEECH_METERING_THRESHOLD = -42;
 const CUE_DURATION_MS = 760;
 
 type VoiceDestinationResponse = {
   text: string;
   destination: string;
-  prompt: string;
-  audio: string;
 };
-
-async function restorePlaybackAudioMode() {
-  try {
-    await setAudioModeAsync({
-      allowsRecording: false,
-      playsInSilentMode: true,
-      shouldPlayInBackground: false,
-      shouldRouteThroughEarpiece: false,
-    });
-  } catch (cause) {
-    console.warn('failed to restore playback audio mode', cause);
-  }
-}
 
 function speakPrompt(text: string) {
   return new Promise<void>((resolve) => {
@@ -87,16 +62,14 @@ export function DestinationScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceStatus, setVoiceStatus] = useState(VOICE_PROMPT);
-  const [isRecording, setIsRecording] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const [isVoiceFlowActive, setIsVoiceFlowActive] = useState(false);
   const [voiceCaptureStage, setVoiceCaptureStage] = useState<VoiceCaptureStage>('prompting');
   const endCuePlayer = useAudioPlayer(require('../../../assets/audio/voice_recognition_end_tiding_down.wav'));
-  const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
-  const recorderState = useAudioRecorderState(recorder, 150);
-  const isRecordingRef = useRef(false);
-  const hasDetectedSpeechRef = useRef(false);
-  const lastSpeechAtRef = useRef<number | null>(null);
-  const submissionPendingRef = useRef(false);
+  const isRecognitionActiveRef = useRef(false);
+  const recognitionSettledRef = useRef(true);
+  const ignoredAbortCountRef = useRef(0);
+  const activeRecognitionSequenceRef = useRef(0);
   const voiceSequenceRef = useRef(0);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
@@ -112,53 +85,12 @@ export function DestinationScreen() {
   useEffect(() => {
     return () => {
       voiceSequenceRef.current += 1;
-      if (!isRecordingRef.current) {
-        return;
+      recognitionSettledRef.current = true;
+      if (isRecognitionActiveRef.current) {
+        isRecognitionActiveRef.current = false;
+        ExpoSpeechRecognitionModule.abort();
       }
-      isRecordingRef.current = false;
-      void recorder
-        .stop()
-        .catch((cause) => console.warn('failed to stop recording on unmount', cause))
-        .finally(() => {
-          void restorePlaybackAudioMode();
-        });
     };
-  }, [recorder]);
-
-  const sendVoiceDestination = useCallback(async (uri: string) => {
-    const formData = new FormData();
-    formData.append('file', {
-      uri,
-      name: 'destination.m4a',
-      type: 'audio/m4a',
-    } as unknown as Blob);
-
-    let response: Response;
-    try {
-      response = await fetch(VOICE_DESTINATION_URL, {
-        method: 'POST',
-        body: formData,
-      });
-    } catch {
-      throw new Error('음성 업로드에 실패했습니다. 네트워크를 확인하세요.');
-    }
-
-    const raw = await response.text();
-    let payload: VoiceDestinationResponse & { detail?: string } | null = null;
-    try {
-      payload = JSON.parse(raw) as VoiceDestinationResponse & { detail?: string };
-    } catch (parseErr) {
-      console.warn('voice response is not json', raw);
-      // 서버가 HTML/text error를 반환하는 경우도 있으므로 detail에 원문을 담아 처리
-      payload = { text: '', destination: '', prompt: '', audio: '', detail: raw };
-    }
-
-    if (!response.ok) {
-      const message = payload?.detail ?? '음성 목적지를 확인하지 못했습니다.';
-      throw new Error(typeof message === 'string' ? message : '음성 목적지를 확인하지 못했습니다.');
-    }
-
-    return payload as VoiceDestinationResponse;
   }, []);
 
   const signalVoiceInputStart = useCallback(async () => {
@@ -172,86 +104,100 @@ export function DestinationScreen() {
     await wait(CUE_DURATION_MS);
   }, [endCuePlayer]);
 
-  const stopAndSubmitVoice = useCallback(async () => {
-    if (!isRecordingRef.current) {
+  const sendRecognizedDestinationText = useCallback(async (text: string) => {
+    let response: Response;
+    try {
+      response = await fetch(VOICE_DESTINATION_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+    } catch {
+      throw new Error('목적지 분석 요청에 실패했습니다. 네트워크를 확인하세요.');
+    }
+
+    const payload = (await response.json()) as VoiceDestinationResponse & { detail?: unknown };
+    if (!response.ok) {
+      throw new Error(typeof payload.detail === 'string' ? payload.detail : '음성 목적지를 확인하지 못했습니다.');
+    }
+    return payload;
+  }, []);
+
+  const failVoiceRecognition = useCallback((message: string) => {
+    if (recognitionSettledRef.current) {
       return;
     }
 
-    isRecordingRef.current = false;
-    setIsRecording(false);
+    recognitionSettledRef.current = true;
+    isRecognitionActiveRef.current = false;
+    setIsListening(false);
+    setIsVoiceFlowActive(false);
+    setError(message);
+    setVoiceStatus(message);
+    setVoiceCaptureStage('retry');
+    repeatAnnouncement(message);
+  }, []);
+
+  const completeVoiceRecognition = useCallback(async (destination: string) => {
+    if (recognitionSettledRef.current || phaseRef.current !== 'input') {
+      return;
+    }
+
+    const sequence = activeRecognitionSequenceRef.current;
+    recognitionSettledRef.current = true;
+    isRecognitionActiveRef.current = false;
+    setIsListening(false);
     setIsVoiceFlowActive(true);
     setVoiceCaptureStage('processing');
     await Speech.stop();
     setVoiceStatus('종료 신호음입니다. 목적지를 확인 중입니다.');
+    await playEndCue();
 
-    let uri: string | null = null;
-    let recordingError: string | null = null;
-    try {
-      await recorder.stop();
-      uri = recorder.uri;
-    } catch (cause) {
-      recordingError = cause instanceof Error ? cause.message : '녹음을 종료하지 못했습니다.';
-      setError(recordingError);
-      setVoiceStatus(recordingError);
-    } finally {
-      await restorePlaybackAudioMode();
+    if (sequence !== voiceSequenceRef.current || phaseRef.current !== 'input') {
       setIsVoiceFlowActive(false);
-      submissionPendingRef.current = false;
-    }
-
-    if (recordingError) {
-      setVoiceCaptureStage('retry');
-      repeatAnnouncement(recordingError);
       return;
     }
 
-    if (!uri) {
-      const message = '녹음 파일을 찾지 못했습니다. 화면을 두 번 터치해 다시 입력해주세요.';
+    try {
+      const result = await sendRecognizedDestinationText(destination);
+      const extractedDestination = result.destination.trim();
+      if (!extractedDestination) {
+        throw new Error('목적지를 인식하지 못했습니다. 화면을 두 번 터치해 다시 입력해주세요.');
+      }
+
+      setError(null);
+      setDestinationQuery(extractedDestination);
+      clearRoute();
+      setIsVoiceFlowActive(false);
+      setPhase('candidate');
+      setVoiceStatus(`${extractedDestination}으로 인식했습니다.`);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : '음성 목적지를 처리하지 못했습니다.';
+      setIsVoiceFlowActive(false);
       setError(message);
       setVoiceStatus(message);
       setVoiceCaptureStage('retry');
       repeatAnnouncement(message);
-      return;
     }
+  }, [clearRoute, playEndCue, sendRecognizedDestinationText, setDestinationQuery]);
 
-    await playEndCue();
-    setVoiceStatus('음성을 인식하고 있습니다.');
-
+  const startVoiceRecognition = useCallback(async (sequence: number) => {
     try {
-      const result = await sendVoiceDestination(uri);
-      const destination = result.destination.trim();
+      setIsVoiceFlowActive(true);
+      setVoiceStatus('음성 인식 권한을 확인 중입니다.');
 
-      if (!destination) {
-        const message = `${result.prompt || '목적지를 인식하지 못했습니다.'} 화면을 두 번 터치해 다시 입력해주세요.`;
-        setError(message);
+      if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
+        const message = '이 기기에서 음성 인식을 사용할 수 없습니다. 화면을 두 번 터치해 다시 시도해주세요.';
+        setIsVoiceFlowActive(false);
         setVoiceStatus(message);
         setVoiceCaptureStage('retry');
         repeatAnnouncement(message);
         return;
       }
 
-      setError(null);
-      setDestinationQuery(destination);
-      clearRoute();
-      setPhase('candidate');
-      setVoiceStatus(result.prompt || `${destination}으로 인식했습니다.`);
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : '음성 목적지를 처리하지 못했습니다.';
-      setError(message);
-      setVoiceStatus(message);
-      setVoiceCaptureStage('retry');
-      repeatAnnouncement(message);
-    }
-  }, [clearRoute, playEndCue, recorder, sendVoiceDestination, setDestinationQuery]);
-
-  const startVoiceRecording = useCallback(async (sequence: number) => {
-    try {
-      setIsVoiceFlowActive(true);
-      setVoiceStatus('마이크 권한을 확인 중입니다.');
-
-      const permission = await requestRecordingPermissionsAsync();
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
-        const message = '마이크 권한이 필요합니다. 화면을 두 번 터치해 다시 시도해주세요.';
+        const message = '마이크와 음성 인식 권한이 필요합니다. 화면을 두 번 터치해 다시 시도해주세요.';
         setIsVoiceFlowActive(false);
         setVoiceStatus(message);
         setVoiceCaptureStage('retry');
@@ -267,58 +213,85 @@ export function DestinationScreen() {
         return;
       }
 
-      await setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
-        shouldPlayInBackground: false,
-        shouldRouteThroughEarpiece: false,
+      activeRecognitionSequenceRef.current = sequence;
+      recognitionSettledRef.current = false;
+      ExpoSpeechRecognitionModule.start({
+        lang: 'ko-KR',
+        interimResults: true,
+        maxAlternatives: 1,
+        continuous: false,
       });
-
-      await recorder.prepareToRecordAsync();
-      recorder.record();
-      hasDetectedSpeechRef.current = false;
-      lastSpeechAtRef.current = null;
-      submissionPendingRef.current = false;
-      isRecordingRef.current = true;
-      setIsRecording(true);
-      setVoiceCaptureStage('listening');
-      setVoiceStatus('듣는 중입니다. 말씀을 마치면 1.5초 뒤 자동으로 확인합니다.');
     } catch (cause) {
-      isRecordingRef.current = false;
-      setIsRecording(false);
-      await restorePlaybackAudioMode();
-      setIsVoiceFlowActive(false);
-      const message = cause instanceof Error ? cause.message : '녹음을 시작하지 못했습니다.';
-      setVoiceStatus(message);
-      setVoiceCaptureStage('retry');
-      repeatAnnouncement(message);
+      recognitionSettledRef.current = false;
+      failVoiceRecognition(cause instanceof Error ? cause.message : '음성 인식을 시작하지 못했습니다.');
     }
-  }, [recorder, signalVoiceInputStart]);
+  }, [failVoiceRecognition, signalVoiceInputStart]);
 
-  const cancelCurrentRecording = useCallback(async () => {
-    if (!isRecordingRef.current) {
+  const cancelCurrentRecognition = useCallback(() => {
+    recognitionSettledRef.current = true;
+    if (isRecognitionActiveRef.current) {
+      ignoredAbortCountRef.current += 1;
+      ExpoSpeechRecognitionModule.abort();
+      isRecognitionActiveRef.current = false;
+    }
+    setIsListening(false);
+  }, []);
+
+  useSpeechRecognitionEvent('start', () => {
+    if (recognitionSettledRef.current || phaseRef.current !== 'input') {
       return;
     }
-    isRecordingRef.current = false;
-    setIsRecording(false);
-    try {
-      await recorder.stop();
-    } finally {
-      await restorePlaybackAudioMode();
-    }
-  }, [recorder]);
+    isRecognitionActiveRef.current = true;
+    setIsListening(true);
+    setVoiceCaptureStage('listening');
+    setVoiceStatus('듣는 중입니다. 말씀을 마치면 자동으로 확인합니다.');
+  });
 
-  const promptAndStartVoiceRecording = useCallback(async () => {
+  useSpeechRecognitionEvent('result', (event) => {
+    if (recognitionSettledRef.current || phaseRef.current !== 'input') {
+      return;
+    }
+    const destination = event.results[0]?.transcript.trim() ?? '';
+    if (!destination) {
+      return;
+    }
+    setDestinationQuery(destination);
+    setVoiceStatus(`인식 중: ${destination}`);
+    if (event.isFinal) {
+      void completeVoiceRecognition(destination);
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (event) => {
+    if (event.error === 'aborted' && ignoredAbortCountRef.current > 0) {
+      ignoredAbortCountRef.current -= 1;
+      return;
+    }
+    const message =
+      event.error === 'no-speech' || event.error === 'speech-timeout'
+        ? '목적지를 듣지 못했습니다. 화면을 두 번 터치해 다시 입력해주세요.'
+        : event.error === 'not-allowed'
+          ? '마이크와 음성 인식 권한이 필요합니다. 설정을 확인해주세요.'
+          : `음성 인식을 완료하지 못했습니다. 화면을 두 번 터치해 다시 입력해주세요. (${event.error})`;
+    failVoiceRecognition(message);
+  });
+
+  useSpeechRecognitionEvent('end', () => {
+    if (isRecognitionActiveRef.current && !recognitionSettledRef.current) {
+      failVoiceRecognition('목적지를 인식하지 못했습니다. 화면을 두 번 터치해 다시 입력해주세요.');
+    }
+  });
+
+  const promptAndStartVoiceRecognition = useCallback(async () => {
     const sequence = voiceSequenceRef.current + 1;
     voiceSequenceRef.current = sequence;
-    submissionPendingRef.current = false;
     setError(null);
     clearRoute();
     setDestinationQuery('');
     setIsVoiceFlowActive(true);
     setVoiceCaptureStage('prompting');
     await Speech.stop();
-    await cancelCurrentRecording();
+    cancelCurrentRecognition();
     setVoiceStatus(VOICE_PROMPT);
     await speakPrompt(VOICE_PROMPT);
 
@@ -326,51 +299,17 @@ export function DestinationScreen() {
       setIsVoiceFlowActive(false);
       return;
     }
-    await startVoiceRecording(sequence);
-  }, [cancelCurrentRecording, clearRoute, setDestinationQuery, startVoiceRecording]);
+    await startVoiceRecognition(sequence);
+  }, [cancelCurrentRecognition, clearRoute, setDestinationQuery, startVoiceRecognition]);
 
   useEffect(() => {
     if (phase === 'input') {
-      void promptAndStartVoiceRecording();
+      void promptAndStartVoiceRecognition();
     } else {
       voiceSequenceRef.current += 1;
+      cancelCurrentRecognition();
     }
-  }, [phase, promptAndStartVoiceRecording]);
-
-  useEffect(() => {
-    if (!isRecording || !isRecordingRef.current || submissionPendingRef.current) {
-      return;
-    }
-    if (recorderState.durationMillis >= MAX_RECORDING_DURATION_MS) {
-      submissionPendingRef.current = true;
-      void stopAndSubmitVoice();
-      return;
-    }
-    if (!hasDetectedSpeechRef.current && recorderState.durationMillis >= NO_SPEECH_TIMEOUT_MS) {
-      submissionPendingRef.current = true;
-      void stopAndSubmitVoice();
-      return;
-    }
-    const metering = recorderState.metering;
-    if (typeof metering !== 'number') {
-      return;
-    }
-    const now = Date.now();
-    if (metering > SPEECH_METERING_THRESHOLD) {
-      hasDetectedSpeechRef.current = true;
-      lastSpeechAtRef.current = now;
-      return;
-    }
-    if (
-      hasDetectedSpeechRef.current &&
-      lastSpeechAtRef.current !== null &&
-      now - lastSpeechAtRef.current >= SILENCE_TIMEOUT_MS
-    ) {
-      submissionPendingRef.current = true;
-      void stopAndSubmitVoice();
-      return;
-    }
-  }, [isRecording, recorderState.durationMillis, recorderState.metering, stopAndSubmitVoice]);
+  }, [cancelCurrentRecognition, phase, promptAndStartVoiceRecognition]);
 
   const state = useMemo(() => {
     if (phase === 'input') {
@@ -438,7 +377,7 @@ export function DestinationScreen() {
   const handleTap = (count: number) => {
     if (count === 2 && phase === 'input') {
       Keyboard.dismiss();
-      void promptAndStartVoiceRecording();
+      void promptAndStartVoiceRecognition();
       return;
     }
     if (count === 2 && phase === 'candidate') {
@@ -472,7 +411,7 @@ export function DestinationScreen() {
     voiceCaptureStage === 'starting'
       ? '진동 후 말씀해주세요'
       : voiceCaptureStage === 'listening'
-        ? '듣는 중 · 발화 종료 1.5초 후 완료'
+        ? '듣는 중 · 말씀을 마치면 자동 완료'
         : voiceCaptureStage === 'processing'
           ? '종료 신호음 · 확인 중'
           : '화면을 두 번 터치해 다시 입력';
@@ -481,7 +420,7 @@ export function DestinationScreen() {
     <ScreenFrame
       phase={state.phase}
       accent={state.accent}
-      warm={voiceCaptureStage === 'starting' || isRecording}
+      warm={voiceCaptureStage === 'starting' || isListening}
       onPress={handleScreenPress}>
       <View style={styles.body}>
         {phase === 'input' && (
@@ -502,8 +441,8 @@ export function DestinationScreen() {
               style={styles.input}
             />
             <Text style={styles.label}>목적지 (음성 입력)</Text>
-            <View style={[styles.voiceState, isRecording && styles.voiceStateRecording, isVoiceCueActive && styles.voiceStateCue]}>
-              {(isRecording || isVoiceCueActive) && <ActivityIndicator color={IeumColors.surface} />}
+            <View style={[styles.voiceState, isListening && styles.voiceStateRecording, isVoiceCueActive && styles.voiceStateCue]}>
+              {(isListening || isVoiceCueActive) && <ActivityIndicator color={IeumColors.surface} />}
               <Text style={styles.voiceStateText}>{voiceStateLabel}</Text>
             </View>
             <Text style={styles.voiceHint}>{voiceStatus}</Text>
