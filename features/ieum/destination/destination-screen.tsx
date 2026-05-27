@@ -45,7 +45,6 @@ async function restorePlaybackAudioMode() {
     await setAudioModeAsync({
       allowsRecording: false,
       playsInSilentMode: true,
-      interruptionMode: 'mixWithOthers',
       shouldPlayInBackground: false,
       shouldRouteThroughEarpiece: false,
     });
@@ -271,7 +270,6 @@ export function DestinationScreen() {
       await setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
-        interruptionMode: 'mixWithOthers',
         shouldPlayInBackground: false,
         shouldRouteThroughEarpiece: false,
       });
