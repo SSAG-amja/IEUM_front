@@ -3,6 +3,14 @@ export type Coordinate = {
   longitude: number;
 };
 
+export type LocationRequestInput =
+  | string
+  | {
+      query?: string;
+      coordinate?: Coordinate;
+      label?: string;
+    };
+
 export type RouteFeature = {
   type: 'Feature';
   geometry: {
@@ -62,13 +70,22 @@ export type RouteResponse = {
 
 const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
 
-export async function requestAccessibleRoute(originQuery: string, destinationQuery: string) {
+function locationPayload(input: LocationRequestInput) {
+  if (typeof input === 'string') {
+    return { query: input };
+  }
+  return input.coordinate
+    ? { coordinate: input.coordinate, label: input.label ?? input.query ?? '현재 위치' }
+    : { query: input.query ?? input.label ?? '' };
+}
+
+export async function requestAccessibleRoute(origin: LocationRequestInput, destination: LocationRequestInput) {
   const response = await fetch(`${API_URL}/api/v1/routes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      origin: { query: originQuery },
-      destination: { query: destinationQuery },
+      origin: locationPayload(origin),
+      destination: locationPayload(destination),
       profile: 'visual_impairment_default',
     }),
   });

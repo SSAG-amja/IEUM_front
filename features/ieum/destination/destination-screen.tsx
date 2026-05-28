@@ -1,6 +1,7 @@
 import { type Href, useRouter } from 'expo-router';
 import { useAudioPlayer } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
+import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -9,6 +10,8 @@ import { ActivityIndicator, Keyboard, Pressable, StyleSheet, Text, TextInput, Vi
 import { ActionLine, Pill } from '@/components/ieum/ieum-ui';
 import { MapVisual } from '@/components/ieum/map-visual';
 import { IeumColors } from '@/constants/theme';
+import { distanceMeters } from '@/features/ieum/guidance/route-navigator';
+import { useCurrentLocation } from '@/features/ieum/guidance/use-current-location';
 import { useTapSequence } from '@/hooks/use-tap-sequence';
 import { requestAccessibleRoute } from '@/services/route-api';
 import { useRouteSession } from '@/features/ieum/session/route-session-provider';
@@ -51,9 +54,11 @@ export function DestinationScreen() {
   const router = useRouter();
   const {
     originQuery,
+    originCoordinate,
     destinationQuery,
     route,
     setOriginQuery,
+    setOriginCoordinate,
     setDestinationQuery,
     setRoute,
     clearRoute,
@@ -65,14 +70,84 @@ export function DestinationScreen() {
   const [isListening, setIsListening] = useState(false);
   const [isVoiceFlowActive, setIsVoiceFlowActive] = useState(false);
   const [voiceCaptureStage, setVoiceCaptureStage] = useState<VoiceCaptureStage>('prompting');
+  const [originStatus, setOriginStatus] = useState('현재 위치를 확인하는 중입니다.');
   const endCuePlayer = useAudioPlayer(require('../../../assets/audio/voice_recognition_end_tiding_down.wav'));
+  const gps = useCurrentLocation(phase !== 'building' || !route);
   const isRecognitionActiveRef = useRef(false);
   const recognitionSettledRef = useRef(true);
   const ignoredAbortCountRef = useRef(0);
   const activeRecognitionSequenceRef = useRef(0);
   const voiceSequenceRef = useRef(0);
   const phaseRef = useRef(phase);
+  const autoOriginRef = useRef<string | null>(null);
+  const lastReverseGeocodedOriginRef = useRef<{ latitude: number; longitude: number } | null>(null);
   phaseRef.current = phase;
+
+  const formatCurrentAddress = useCallback((address: Location.LocationGeocodedAddress) => {
+    const road = [address.street, address.name].filter(Boolean).join(' ');
+    const area = [address.region, address.city, address.district].filter(Boolean).join(' ');
+    return (road || area || '현재 위치').trim();
+  }, []);
+
+  useEffect(() => {
+    const current = gps.currentLocation;
+    if (!current) {
+      if (gps.error) {
+        setOriginStatus(gps.error);
+      }
+      return;
+    }
+
+    const fixedCurrent = current;
+    let cancelled = false;
+    async function updateOriginFromCurrentLocation() {
+      const coordinate = { latitude: fixedCurrent.latitude, longitude: fixedCurrent.longitude };
+      const previous = lastReverseGeocodedOriginRef.current;
+      if (previous && distanceMeters(previous, coordinate) < 25) {
+        return;
+      }
+      lastReverseGeocodedOriginRef.current = coordinate;
+      try {
+        const [address] = await Location.reverseGeocodeAsync(coordinate);
+        if (cancelled) {
+          return;
+        }
+        const label = address ? formatCurrentAddress(address) : `현재 위치 ${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}`;
+        if (!originQuery.trim() || originQuery === '고덕로 210' || originQuery === autoOriginRef.current) {
+          autoOriginRef.current = label;
+          setOriginQuery(label);
+          setOriginCoordinate(coordinate);
+          clearRoute();
+        }
+        setOriginStatus(`현재 위치 출발지: ${label}`);
+      } catch {
+        if (!cancelled) {
+          const label = `현재 위치 ${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}`;
+          if (!originQuery.trim() || originQuery === '고덕로 210' || originQuery === autoOriginRef.current) {
+            autoOriginRef.current = label;
+            setOriginQuery(label);
+            setOriginCoordinate(coordinate);
+            clearRoute();
+          }
+          setOriginStatus('주소 변환은 실패했지만 현재 위치 좌표를 출발지로 사용합니다.');
+        }
+      }
+    }
+
+    void updateOriginFromCurrentLocation();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    clearRoute,
+    formatCurrentAddress,
+    gps.currentLocation,
+    gps.error,
+    originQuery,
+    setOriginCoordinate,
+    setOriginQuery,
+  ]);
 
   useEffect(() => {
     setDestinationQuery('');
@@ -365,14 +440,17 @@ export function DestinationScreen() {
     setError(null);
     clearRoute();
     try {
-      const response = await requestAccessibleRoute(originQuery.trim(), destinationQuery.trim());
+      const origin = originCoordinate
+        ? { query: originQuery.trim(), coordinate: originCoordinate, label: originQuery.trim() || '현재 위치' }
+        : originQuery.trim();
+      const response = await requestAccessibleRoute(origin, destinationQuery.trim());
       setRoute(response);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '경로를 계산하지 못했습니다.');
     } finally {
       setLoading(false);
     }
-  }, [clearRoute, destinationQuery, originQuery, setRoute]);
+  }, [clearRoute, destinationQuery, originCoordinate, originQuery, setRoute]);
 
   const handleTap = (count: number) => {
     if (count === 2 && phase === 'input') {
@@ -430,7 +508,9 @@ export function DestinationScreen() {
               accessibilityLabel="출발지 입력"
               value={originQuery}
               onChangeText={(value) => {
+                autoOriginRef.current = null;
                 setOriginQuery(value);
+                setOriginCoordinate(null);
                 clearRoute();
               }}
               onPressIn={(event) => event.stopPropagation()}
@@ -440,6 +520,7 @@ export function DestinationScreen() {
               returnKeyType="done"
               style={styles.input}
             />
+            <Text style={styles.originStatus}>{originStatus}</Text>
             <Text style={styles.label}>목적지 (음성 입력)</Text>
             <View style={[styles.voiceState, isListening && styles.voiceStateRecording, isVoiceCueActive && styles.voiceStateCue]}>
               {(isListening || isVoiceCueActive) && <ActivityIndicator color={IeumColors.surface} />}
@@ -554,6 +635,7 @@ const styles = StyleSheet.create({
   },
   voiceStateText: { color: IeumColors.text, fontSize: 14, fontWeight: '800' },
   voiceHint: { color: IeumColors.textMuted, fontSize: 11, marginTop: 8 },
+  originStatus: { color: IeumColors.cyan, fontSize: 11, lineHeight: 16, marginTop: 8 },
   recognizedCard: {
     borderRadius: 12,
     borderWidth: 1,
