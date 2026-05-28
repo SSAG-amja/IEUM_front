@@ -25,6 +25,7 @@ const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
 const VOICE_DESTINATION_URL = `${API_URL}/api/v1/voice/destination`;
 const VOICE_PROMPT = '목적지를 말씀해주세요.';
 const CUE_DURATION_MS = 760;
+const PENDING_CURRENT_LOCATION_LABEL = '현재 위치 확인 중';
 
 type VoiceDestinationResponse = {
   text: string;
@@ -113,7 +114,7 @@ export function DestinationScreen() {
           return;
         }
         const label = address ? formatCurrentAddress(address) : `현재 위치 ${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}`;
-        if (!originQuery.trim() || originQuery === '고덕로 210' || originQuery === autoOriginRef.current) {
+        if (!originQuery.trim() || originQuery === PENDING_CURRENT_LOCATION_LABEL || originQuery === autoOriginRef.current) {
           autoOriginRef.current = label;
           setOriginQuery(label);
           setOriginCoordinate(coordinate);
@@ -123,7 +124,7 @@ export function DestinationScreen() {
       } catch {
         if (!cancelled) {
           const label = `현재 위치 ${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}`;
-          if (!originQuery.trim() || originQuery === '고덕로 210' || originQuery === autoOriginRef.current) {
+          if (!originQuery.trim() || originQuery === PENDING_CURRENT_LOCATION_LABEL || originQuery === autoOriginRef.current) {
             autoOriginRef.current = label;
             setOriginQuery(label);
             setOriginCoordinate(coordinate);
@@ -440,6 +441,9 @@ export function DestinationScreen() {
     setError(null);
     clearRoute();
     try {
+      if (!originCoordinate && originQuery.trim() === PENDING_CURRENT_LOCATION_LABEL) {
+        throw new Error('현재 위치를 아직 확인하지 못했습니다. 위치 권한을 허용하고 잠시 뒤 다시 시도해주세요.');
+      }
       const origin = originCoordinate
         ? { query: originQuery.trim(), coordinate: originCoordinate, label: originQuery.trim() || '현재 위치' }
         : originQuery.trim();

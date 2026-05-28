@@ -17,7 +17,7 @@ type RouteSessionValue = {
 const RouteSessionContext = createContext<RouteSessionValue | null>(null);
 
 export function RouteSessionProvider({ children }: PropsWithChildren) {
-  const [originQuery, setOriginQuery] = useState('고덕로 210');
+  const [originQuery, setOriginQuery] = useState('현재 위치 확인 중');
   const [originCoordinate, setOriginCoordinate] = useState<Coordinate | null>(null);
   const [destinationQuery, setDestinationQuery] = useState('강남역');
   const [route, setRoute] = useState<RouteResponse | null>(null);
