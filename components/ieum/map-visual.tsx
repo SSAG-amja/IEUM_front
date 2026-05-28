@@ -12,6 +12,9 @@ type MapVisualProps = {
   helperMode: boolean;
   fullscreen?: boolean;
   currentLocation?: Coordinate | null;
+  currentHeading?: number | null;
+  followUser?: boolean;
+  navigationMessage?: string;
   route?: RouteResponse | null;
   onTripleTap?: () => void;
   onOpenFullscreen?: () => void;
@@ -53,6 +56,9 @@ export function MapVisual({
   helperMode,
   fullscreen = false,
   currentLocation,
+  currentHeading,
+  followUser = false,
+  navigationMessage,
   route,
   onTripleTap,
   onOpenFullscreen,
@@ -75,7 +81,7 @@ export function MapVisual({
     [route]
   );
 
-  const focusRouteOrLocation = useCallback(() => {
+  const fitRouteOrLocation = useCallback(() => {
     if (!isMapReadyRef.current) {
       return;
     }
@@ -99,8 +105,26 @@ export function MapVisual({
   }, [currentLocation, routeCoordinates]);
 
   useEffect(() => {
-    focusRouteOrLocation();
-  }, [focusRouteOrLocation]);
+    if (!followUser) {
+      fitRouteOrLocation();
+    }
+  }, [fitRouteOrLocation, followUser]);
+
+  useEffect(() => {
+    if (!isMapReadyRef.current || !followUser || !currentLocation) {
+      return;
+    }
+
+    mapRef.current?.animateCamera(
+      {
+        center: currentLocation,
+        heading: currentHeading ?? 0,
+        pitch: 0,
+        zoom: fullscreen ? 18 : 17,
+      },
+      { duration: 450 }
+    );
+  }, [currentHeading, currentLocation, followUser, fullscreen]);
 
   const rememberCurrentCamera = () => {
     const map = mapRef.current;
@@ -172,7 +196,7 @@ export function MapVisual({
           toolbarEnabled={false}
           onMapReady={() => {
             isMapReadyRef.current = true;
-            focusRouteOrLocation();
+            fitRouteOrLocation();
             rememberCurrentCamera();
           }}
           onDoublePress={handleDoublePress}
@@ -191,7 +215,19 @@ export function MapVisual({
               strokeWidth={feature.properties.edge_type === 'subway_ride' ? 6 : 5}
             />
           ))}
-          {currentLocation && <Marker coordinate={currentLocation} title="출발 위치" pinColor="#0EA5E9" />}
+          {currentLocation && (
+            <Marker coordinate={currentLocation} title="현재 위치" anchor={{ x: 0.5, y: 0.5 }} flat>
+              <View style={styles.locationMarker}>
+                <View
+                  style={[
+                    styles.headingNeedle,
+                    { transform: [{ rotate: `${Number(currentHeading ?? 0)}deg` }] },
+                  ]}
+                />
+                <View style={styles.locationDot} />
+              </View>
+            </Marker>
+          )}
           {destination && (
             <Marker
               coordinate={{ latitude: destination.lat, longitude: destination.lon }}
@@ -202,7 +238,7 @@ export function MapVisual({
         </MapView>
         <View pointerEvents="none" style={[styles.message, helperMode ? styles.helperMessage : styles.trackingMessage]}>
           <Text style={helperMode ? styles.helperText : styles.trackingText}>
-            {helperMode ? '지도 이동/확대 가능 · 3번 터치로 안내 화면 복귀' : '경로와 입력한 출발 위치를 표시 중'}
+            {helperMode ? '지도 이동/확대 가능 · 3번 터치로 안내 화면 복귀' : navigationMessage ?? '현재 위치 기준으로 경로를 표시 중'}
           </Text>
         </View>
       </View>
@@ -265,4 +301,30 @@ const styles = StyleSheet.create({
   helperMessage: { backgroundColor: 'rgba(65, 47, 13, 0.9)' },
   trackingText: { color: '#E2E6ED', fontSize: 11, fontWeight: '600' },
   helperText: { color: IeumColors.amber, fontSize: 11, fontWeight: '600' },
+  locationMarker: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headingNeedle: {
+    position: 'absolute',
+    top: 0,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderBottomWidth: 21,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'rgba(14, 165, 233, 0.48)',
+  },
+  locationDot: {
+    width: 17,
+    height: 17,
+    borderRadius: 9,
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    backgroundColor: '#0EA5E9',
+  },
 });

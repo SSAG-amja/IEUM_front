@@ -1,5 +1,5 @@
 import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -8,6 +8,8 @@ import { ActionLine, Pill } from '@/components/ieum/ieum-ui';
 import { MapVisual } from '@/components/ieum/map-visual';
 import { IeumColors } from '@/constants/theme';
 import { getDebugRoute } from '@/features/ieum/debug/route-fixtures';
+import { useCurrentLocation } from '@/features/ieum/guidance/use-current-location';
+import { useGpsGuidance } from '@/features/ieum/guidance/use-gps-guidance';
 import { useGuidanceController } from '@/features/ieum/guidance/use-guidance-controller';
 import { useRouteSession } from '@/features/ieum/session/route-session-provider';
 import { ScreenFrame } from '@/features/ieum/shared/screen-frame';
@@ -17,6 +19,7 @@ import { useTapSequence } from '@/hooks/use-tap-sequence';
 const COMMANDS = ['현재 안내', '주변 도움 모드', '엘리베이터', '화장실'] as const;
 const DESTINATION_ROUTE = '/destination' as Href;
 const HELPER_MODE_ANNOUNCEMENT_INTERVAL_MS = 20000;
+const GPS_APPROACH_ANNOUNCEMENT_M = 30;
 const HELPER_MODE_ANNOUNCEMENT =
   '주변 도움 모드입니다. 지도를 직접 확인할 수 있습니다. 화면을 세 번 터치하면 자동 안내로 돌아갑니다.';
 const HELPER_MODE_EXIT_ANNOUNCEMENT = '주변 도움 모드가 비활성화되었습니다. 자동 안내로 돌아갑니다.';
@@ -28,10 +31,19 @@ export function GuidanceScreen() {
   const { route: sessionRoute, clearRoute } = useRouteSession();
   const route = debugRoute ?? sessionRoute;
   const controller = useGuidanceController(route);
+  const gps = useCurrentLocation(Boolean(route));
+  const gpsGuidance = useGpsGuidance({
+    route,
+    instructions: controller.instructions,
+    stepIndex: controller.stepIndex,
+    currentLocation: gps.currentLocation,
+    onStepChange: controller.goToStep,
+  });
   const [helperMode, setHelperMode] = useState(false);
   const [mapFullscreen, setMapFullscreen] = useState(false);
   const [showRequestPanel, setShowRequestPanel] = useState(false);
   const [suppressReturnedStepAnnouncement, setSuppressReturnedStepAnnouncement] = useState(false);
+  const lastGpsPromptRef = useRef<{ stepIndex: number; kind: string } | null>(null);
 
   useEffect(() => {
     if (!route) {
@@ -48,7 +60,41 @@ export function GuidanceScreen() {
 
   useEffect(() => {
     setSuppressReturnedStepAnnouncement(false);
+    lastGpsPromptRef.current = null;
   }, [controller.stepIndex]);
+
+  useEffect(() => {
+    if (helperMode || !controller.isGpsGuided) {
+      return;
+    }
+
+    const remainingM = gpsGuidance.match?.remainingInstructionM;
+    const previous = lastGpsPromptRef.current;
+    if (gpsGuidance.offRoute && previous?.kind !== 'off_route') {
+      lastGpsPromptRef.current = { stepIndex: controller.stepIndex, kind: 'off_route' };
+      repeatAnnouncement(gps.error ?? gpsGuidance.message);
+      return;
+    }
+
+    if (
+      remainingM !== null &&
+      remainingM !== undefined &&
+      remainingM <= GPS_APPROACH_ANNOUNCEMENT_M &&
+      remainingM > 14 &&
+      previous?.kind !== 'approach'
+    ) {
+      lastGpsPromptRef.current = { stepIndex: controller.stepIndex, kind: 'approach' };
+      repeatAnnouncement(gpsGuidance.message);
+    }
+  }, [
+    controller.isGpsGuided,
+    controller.stepIndex,
+    gps.error,
+    gpsGuidance.match?.remainingInstructionM,
+    gpsGuidance.message,
+    gpsGuidance.offRoute,
+    helperMode,
+  ]);
 
   useAnnouncement(
     controller.presentation?.tts ?? '',
@@ -113,18 +159,13 @@ export function GuidanceScreen() {
     return null;
   }
 
-  const currentLocation = { latitude: route.summary.start.lat, longitude: route.summary.start.lon };
+  const fallbackLocation = { latitude: route.summary.start.lat, longitude: route.summary.start.lon };
+  const currentLocation = gps.currentLocation ?? fallbackLocation;
+  const gpsMessage = gps.error ?? gpsGuidance.message;
   const rightAction = controller.isGpsGuided ? (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="GPS 자동 이동 시뮬레이션"
-      style={styles.gpsAdvanceButton}
-      onPress={(event) => {
-        event.stopPropagation();
-        controller.advance();
-      }}>
-      <Text style={styles.gpsAdvanceText}>GPS 이동</Text>
-    </Pressable>
+    <View style={[styles.gpsStatus, gpsGuidance.offRoute && styles.gpsStatusWarning]}>
+      <Text style={styles.gpsStatusText}>{gps.isTracking ? 'GPS 추적' : 'GPS 확인'}</Text>
+    </View>
   ) : undefined;
 
   return (
@@ -158,6 +199,8 @@ export function GuidanceScreen() {
           state={controller.presentation}
           helperMode={helperMode}
           currentLocation={currentLocation}
+          currentHeading={gps.currentLocation?.heading}
+          navigationMessage={gpsMessage}
           route={route}
           instruction={controller.activeInstruction}
           onMapTripleTap={() => {
@@ -173,6 +216,7 @@ export function GuidanceScreen() {
         <View style={styles.ttsCard}>
           <Text style={styles.ttsHeading}>현재 음성 안내</Text>
           <Text style={styles.ttsText}>{controller.presentation.tts}</Text>
+          {controller.isGpsGuided && <Text style={styles.gpsMessage}>{gpsMessage}</Text>}
         </View>
       </View>
       <View style={styles.actions}>
@@ -190,7 +234,7 @@ export function GuidanceScreen() {
           <>
             <ActionLine count={2} label="현재 안내 다시 듣기" />
             <ActionLine count={3} label="음성 명령 / 주변 도움 모드" />
-            <Text style={styles.hint}>실외 구간은 GPS 이동 버튼으로 자동 진행을 시뮬레이션합니다.</Text>
+            <Text style={styles.hint}>실외 구간은 현재 위치에 맞춰 자동으로 다음 안내로 넘어갑니다.</Text>
           </>
         )}
       </View>
@@ -227,6 +271,9 @@ export function GuidanceScreen() {
             fullscreen
             helperMode
             currentLocation={currentLocation}
+            currentHeading={gps.currentLocation?.heading}
+            followUser={false}
+            navigationMessage={gpsMessage}
             route={route}
             onTripleTap={() => {
               exitHelperMode();
@@ -272,7 +319,7 @@ const styles = StyleSheet.create({
   ttsText: { color: '#B7C0CE', fontSize: 12, lineHeight: 18, marginTop: 6 },
   actions: { gap: 6, paddingBottom: 4 },
   hint: { color: IeumColors.textMuted, textAlign: 'center', fontSize: 10, marginTop: 4 },
-  gpsAdvanceButton: {
+  gpsStatus: {
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#276C86',
@@ -280,7 +327,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 7,
   },
-  gpsAdvanceText: { color: IeumColors.cyan, fontSize: 11, fontWeight: '800' },
+  gpsStatusWarning: {
+    borderColor: '#995D19',
+    backgroundColor: '#35230E',
+  },
+  gpsStatusText: { color: IeumColors.cyan, fontSize: 11, fontWeight: '800' },
+  gpsMessage: { color: IeumColors.cyan, fontSize: 11, lineHeight: 16, marginTop: 8 },
   modalRoot: { flex: 1, justifyContent: 'flex-end' },
   modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(3, 7, 13, 0.68)' },
   requestCard: {

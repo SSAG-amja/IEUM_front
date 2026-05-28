@@ -8,6 +8,8 @@ type GuidanceVisualProps = {
   state: GuidancePresentation;
   helperMode: boolean;
   currentLocation?: Coordinate | null;
+  currentHeading?: number | null;
+  navigationMessage?: string;
   route?: RouteResponse | null;
   instruction?: RouteInstruction;
   onMapTripleTap: () => void;
@@ -18,6 +20,8 @@ export function GuidanceVisual({
   state,
   helperMode,
   currentLocation,
+  currentHeading,
+  navigationMessage,
   route,
   instruction,
   onMapTripleTap,
@@ -29,6 +33,9 @@ export function GuidanceVisual({
         title={state.mapTitle}
         helperMode={helperMode}
         currentLocation={currentLocation}
+        currentHeading={currentHeading}
+        followUser={!helperMode}
+        navigationMessage={navigationMessage}
         route={route}
         onTripleTap={onMapTripleTap}
         onOpenFullscreen={onOpenFullscreen}
