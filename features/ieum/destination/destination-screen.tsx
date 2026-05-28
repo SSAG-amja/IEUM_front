@@ -85,6 +85,7 @@ export function DestinationScreen() {
   const phaseRef = useRef(phase);
   const autoOriginRef = useRef<string | null>(null);
   const lastReverseGeocodedOriginRef = useRef<{ latitude: number; longitude: number } | null>(null);
+  const reverseGeocodeInFlightRef = useRef(false);
   const locationReadyPromptedRef = useRef(false);
   phaseRef.current = phase;
 
@@ -105,20 +106,26 @@ export function DestinationScreen() {
     }
 
     const fixedCurrent = current;
-    let cancelled = false;
     async function updateOriginFromCurrentLocation() {
       const coordinate = { latitude: fixedCurrent.latitude, longitude: fixedCurrent.longitude };
       const previous = lastReverseGeocodedOriginRef.current;
       if (previous && distanceMeters(previous, coordinate) < 25) {
         return;
       }
-      lastReverseGeocodedOriginRef.current = coordinate;
+      if (reverseGeocodeInFlightRef.current) {
+        return;
+      }
+      setOriginStatus('현재 위치 좌표를 확인했습니다. 주소를 변환하는 중입니다.');
+      reverseGeocodeInFlightRef.current = true;
       try {
         const [address] = await Location.reverseGeocodeAsync(coordinate);
-        if (cancelled) {
+        if (!address) {
+          setOriginStatus('현재 위치 좌표는 확인했지만 주소를 찾지 못했습니다. 다시 확인하는 중입니다.');
+          setIsOriginReady(false);
           return;
         }
-        const label = address ? formatCurrentAddress(address) : `현재 위치 ${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}`;
+        const label = formatCurrentAddress(address);
+        lastReverseGeocodedOriginRef.current = coordinate;
         if (!originQuery.trim() || originQuery === PENDING_CURRENT_LOCATION_LABEL || originQuery === autoOriginRef.current) {
           autoOriginRef.current = label;
           setOriginQuery(label);
@@ -128,25 +135,14 @@ export function DestinationScreen() {
         }
         setOriginStatus(`현재 위치 출발지: ${label}`);
       } catch {
-        if (!cancelled) {
-          const label = `현재 위치 ${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}`;
-          if (!originQuery.trim() || originQuery === PENDING_CURRENT_LOCATION_LABEL || originQuery === autoOriginRef.current) {
-            autoOriginRef.current = label;
-            setOriginQuery(label);
-            setOriginCoordinate(coordinate);
-            setIsOriginReady(true);
-            clearRoute();
-          }
-          setOriginStatus('주소 변환은 실패했지만 현재 위치 좌표를 출발지로 사용합니다.');
-        }
+        setOriginStatus('현재 위치 좌표는 확인했지만 주소 변환에 실패했습니다. 다시 확인하는 중입니다.');
+        setIsOriginReady(false);
+      } finally {
+        reverseGeocodeInFlightRef.current = false;
       }
     }
 
     void updateOriginFromCurrentLocation();
-
-    return () => {
-      cancelled = true;
-    };
   }, [
     clearRoute,
     formatCurrentAddress,

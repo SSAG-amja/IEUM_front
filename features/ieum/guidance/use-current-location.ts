@@ -3,12 +3,33 @@ import { useEffect, useState } from 'react';
 
 import { NavigationFix } from '@/features/ieum/guidance/route-navigator';
 
+const CURRENT_LOCATION_TIMEOUT_MS = 8000;
+
 type LocationState = {
   currentLocation: NavigationFix | null;
   permissionGranted: boolean;
   isTracking: boolean;
   error: string | null;
 };
+
+function toNavigationFix(location: Location.LocationObject): NavigationFix {
+  return {
+    latitude: location.coords.latitude,
+    longitude: location.coords.longitude,
+    accuracy: location.coords.accuracy,
+    heading: location.coords.heading,
+    speed: location.coords.speed,
+  };
+}
+
+function withTimeout<T>(promise: Promise<T>, milliseconds: number) {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('location timeout')), milliseconds);
+    }),
+  ]);
+}
 
 export function useCurrentLocation(enabled: boolean): LocationState {
   const [currentLocation, setCurrentLocation] = useState<NavigationFix | null>(null);
@@ -38,17 +59,15 @@ export function useCurrentLocation(enabled: boolean): LocationState {
         }
 
         setPermissionGranted(true);
-        const initial = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        if (!cancelled) {
-          setCurrentLocation({
-            latitude: initial.coords.latitude,
-            longitude: initial.coords.longitude,
-            accuracy: initial.coords.accuracy,
-            heading: initial.coords.heading,
-            speed: initial.coords.speed,
-          });
+        setIsTracking(true);
+        setError(null);
+
+        const lastKnown = await Location.getLastKnownPositionAsync({
+          maxAge: 60_000,
+          requiredAccuracy: 200,
+        }).catch(() => null);
+        if (!cancelled && lastKnown) {
+          setCurrentLocation(toNavigationFix(lastKnown));
         }
 
         subscription = await Location.watchPositionAsync(
@@ -58,18 +77,18 @@ export function useCurrentLocation(enabled: boolean): LocationState {
             distanceInterval: 3,
           },
           (location) => {
-            setCurrentLocation({
-              latitude: location.coords.latitude,
-              longitude: location.coords.longitude,
-              accuracy: location.coords.accuracy,
-              heading: location.coords.heading,
-              speed: location.coords.speed,
-            });
+            setCurrentLocation(toNavigationFix(location));
           }
         );
-        if (!cancelled) {
-          setIsTracking(true);
-          setError(null);
+
+        const initial = await withTimeout(
+          Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          }),
+          CURRENT_LOCATION_TIMEOUT_MS
+        ).catch(() => null);
+        if (!cancelled && initial) {
+          setCurrentLocation(toNavigationFix(initial));
         }
       } catch {
         if (!cancelled) {
