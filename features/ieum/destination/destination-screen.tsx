@@ -24,6 +24,8 @@ const GUIDANCE_ROUTE = '/guidance' as Href;
 const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
 const VOICE_DESTINATION_URL = `${API_URL}/api/v1/voice/destination`;
 const VOICE_PROMPT = '목적지를 말씀해주세요.';
+const LOCATION_WAIT_PROMPT = '현재 위치를 파악 중입니다. 잠시만 기다려 주세요.';
+const LOCATION_READY_PROMPT = '현재 위치 파악이 끝났습니다. 목적지를 말씀해주세요.';
 const CUE_DURATION_MS = 760;
 const PENDING_CURRENT_LOCATION_LABEL = '현재 위치 확인 중';
 
@@ -72,6 +74,7 @@ export function DestinationScreen() {
   const [isVoiceFlowActive, setIsVoiceFlowActive] = useState(false);
   const [voiceCaptureStage, setVoiceCaptureStage] = useState<VoiceCaptureStage>('prompting');
   const [originStatus, setOriginStatus] = useState('현재 위치를 확인하는 중입니다.');
+  const [isOriginReady, setIsOriginReady] = useState(false);
   const endCuePlayer = useAudioPlayer(require('../../../assets/audio/voice_recognition_end_tiding_down.wav'));
   const gps = useCurrentLocation(phase !== 'building' || !route);
   const isRecognitionActiveRef = useRef(false);
@@ -82,6 +85,7 @@ export function DestinationScreen() {
   const phaseRef = useRef(phase);
   const autoOriginRef = useRef<string | null>(null);
   const lastReverseGeocodedOriginRef = useRef<{ latitude: number; longitude: number } | null>(null);
+  const locationReadyPromptedRef = useRef(false);
   phaseRef.current = phase;
 
   const formatCurrentAddress = useCallback((address: Location.LocationGeocodedAddress) => {
@@ -96,6 +100,7 @@ export function DestinationScreen() {
       if (gps.error) {
         setOriginStatus(gps.error);
       }
+      setIsOriginReady(false);
       return;
     }
 
@@ -118,6 +123,7 @@ export function DestinationScreen() {
           autoOriginRef.current = label;
           setOriginQuery(label);
           setOriginCoordinate(coordinate);
+          setIsOriginReady(true);
           clearRoute();
         }
         setOriginStatus(`현재 위치 출발지: ${label}`);
@@ -128,6 +134,7 @@ export function DestinationScreen() {
             autoOriginRef.current = label;
             setOriginQuery(label);
             setOriginCoordinate(coordinate);
+            setIsOriginReady(true);
             clearRoute();
           }
           setOriginStatus('주소 변환은 실패했지만 현재 위치 좌표를 출발지로 사용합니다.');
@@ -358,7 +365,7 @@ export function DestinationScreen() {
     }
   });
 
-  const promptAndStartVoiceRecognition = useCallback(async () => {
+  const promptAndStartVoiceRecognition = useCallback(async (promptText = VOICE_PROMPT) => {
     const sequence = voiceSequenceRef.current + 1;
     voiceSequenceRef.current = sequence;
     setError(null);
@@ -368,8 +375,8 @@ export function DestinationScreen() {
     setVoiceCaptureStage('prompting');
     await Speech.stop();
     cancelCurrentRecognition();
-    setVoiceStatus(VOICE_PROMPT);
-    await speakPrompt(VOICE_PROMPT);
+    setVoiceStatus(promptText);
+    await speakPrompt(promptText);
 
     if (sequence !== voiceSequenceRef.current || phaseRef.current !== 'input') {
       setIsVoiceFlowActive(false);
@@ -380,20 +387,34 @@ export function DestinationScreen() {
 
   useEffect(() => {
     if (phase === 'input') {
+      if (!isOriginReady) {
+        setVoiceStatus(LOCATION_WAIT_PROMPT);
+        setVoiceCaptureStage('prompting');
+        setIsVoiceFlowActive(false);
+        repeatAnnouncement(LOCATION_WAIT_PROMPT);
+        return;
+      }
+      if (!locationReadyPromptedRef.current) {
+        locationReadyPromptedRef.current = true;
+        void promptAndStartVoiceRecognition(LOCATION_READY_PROMPT);
+        return;
+      }
       void promptAndStartVoiceRecognition();
     } else {
       voiceSequenceRef.current += 1;
       cancelCurrentRecognition();
     }
-  }, [cancelCurrentRecognition, phase, promptAndStartVoiceRecognition]);
+  }, [cancelCurrentRecognition, isOriginReady, phase, promptAndStartVoiceRecognition]);
 
   const state = useMemo(() => {
     if (phase === 'input') {
       return {
         phase: '경로 입력',
         accent: '#129FC4',
-        title: '어디로 안내할까요?',
-        subtitle: '목적지를 말씀한 뒤 잠시 기다리면 자동으로 확인합니다.',
+        title: isOriginReady ? '어디로 안내할까요?' : '현재 위치 확인 중',
+        subtitle: isOriginReady
+          ? '목적지를 말씀한 뒤 잠시 기다리면 자동으로 확인합니다.'
+          : '출발지로 사용할 현재 위치를 확인하고 있습니다.',
         tts: voiceStatus,
       };
     }
@@ -431,7 +452,7 @@ export function DestinationScreen() {
       subtitle: `${originQuery.trim()}에서 ${destinationQuery.trim()}까지 접근성 경로를 계산하고 있습니다.`,
       tts: '안전 경로를 탐색 중입니다. 잠시 기다려주세요.',
     };
-  }, [destinationQuery, error, originQuery, phase, route, voiceStatus]);
+  }, [destinationQuery, error, isOriginReady, originQuery, phase, route, voiceStatus]);
 
   useAnnouncement(state.tts, phase !== 'input' && !isVoiceFlowActive);
 
@@ -459,6 +480,10 @@ export function DestinationScreen() {
   const handleTap = (count: number) => {
     if (count === 2 && phase === 'input') {
       Keyboard.dismiss();
+      if (!isOriginReady) {
+        repeatAnnouncement(LOCATION_WAIT_PROMPT);
+        return;
+      }
       void promptAndStartVoiceRecognition();
       return;
     }
@@ -515,6 +540,7 @@ export function DestinationScreen() {
                 autoOriginRef.current = null;
                 setOriginQuery(value);
                 setOriginCoordinate(null);
+                setIsOriginReady(Boolean(value.trim()));
                 clearRoute();
               }}
               onPressIn={(event) => event.stopPropagation()}
