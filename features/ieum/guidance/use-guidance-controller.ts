@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { RouteResponse } from '@/services/route-api';
 import {
@@ -23,14 +23,17 @@ export function useGuidanceController(route: RouteResponse | null) {
     ? presentInstruction(activeInstruction, stepIndex, instructions.length, instructions[stepIndex - 1])
     : null;
   const canAdvance = stepIndex < instructions.length - 1;
-  const advance = () => {
+  const advance = useCallback(() => {
     if (canAdvance) {
       setStepIndex((previous) => previous + 1);
     }
-  };
-  const previous = () => {
+  }, [canAdvance]);
+  const previous = useCallback(() => {
     setStepIndex((current) => Math.max(current - 1, 0));
-  };
+  }, []);
+  const goToStep = useCallback((nextIndex: number) => {
+    setStepIndex(Math.max(0, Math.min(nextIndex, instructions.length - 1)));
+  }, [instructions.length]);
 
   return {
     instructions,
@@ -44,5 +47,6 @@ export function useGuidanceController(route: RouteResponse | null) {
     canAdvance,
     advance,
     previous,
+    goToStep,
   };
 }

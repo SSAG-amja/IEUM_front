@@ -14,7 +14,7 @@ export function TrainLineVisual({ instruction }: { instruction?: RouteInstructio
 
   return (
     <View style={styles.card}>
-      <Text style={styles.heading}>{lineName} 이용</Text>
+      <Text style={styles.heading}>{lineName} 탑승</Text>
       <View style={styles.track}>
         <View style={styles.trackBackground} />
         <View style={styles.trackProgress} />

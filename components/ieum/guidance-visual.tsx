@@ -8,8 +8,13 @@ type GuidanceVisualProps = {
   state: GuidancePresentation;
   helperMode: boolean;
   currentLocation?: Coordinate | null;
+  currentHeading?: number | null;
+  cameraHeading?: number | null;
+  navigationMessage?: string;
   route?: RouteResponse | null;
   instruction?: RouteInstruction;
+  instructions: RouteInstruction[];
+  stepIndex: number;
   onMapTripleTap: () => void;
   onOpenFullscreen: () => void;
 };
@@ -18,8 +23,13 @@ export function GuidanceVisual({
   state,
   helperMode,
   currentLocation,
+  currentHeading,
+  cameraHeading,
+  navigationMessage,
   route,
   instruction,
+  instructions,
+  stepIndex,
   onMapTripleTap,
   onOpenFullscreen,
 }: GuidanceVisualProps) {
@@ -29,6 +39,10 @@ export function GuidanceVisual({
         title={state.mapTitle}
         helperMode={helperMode}
         currentLocation={currentLocation}
+        currentHeading={currentHeading}
+        cameraHeading={cameraHeading}
+        followUser={!helperMode}
+        navigationMessage={navigationMessage}
         route={route}
         onTripleTap={onMapTripleTap}
         onOpenFullscreen={onOpenFullscreen}
@@ -37,7 +51,7 @@ export function GuidanceVisual({
   }
 
   if (state.visual === 'station') {
-    return <StationVisual helperMode={helperMode} instruction={instruction} />;
+    return <StationVisual helperMode={helperMode} instructions={instructions} stepIndex={stepIndex} />;
   }
 
   if (state.visual === 'trainLine') {
