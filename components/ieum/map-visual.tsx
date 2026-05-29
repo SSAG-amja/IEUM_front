@@ -13,6 +13,7 @@ type MapVisualProps = {
   fullscreen?: boolean;
   currentLocation?: Coordinate | null;
   currentHeading?: number | null;
+  cameraHeading?: number | null;
   followUser?: boolean;
   navigationMessage?: string;
   route?: RouteResponse | null;
@@ -57,6 +58,7 @@ export function MapVisual({
   fullscreen = false,
   currentLocation,
   currentHeading,
+  cameraHeading,
   followUser = false,
   navigationMessage,
   route,
@@ -80,6 +82,8 @@ export function MapVisual({
     () => route?.geometry.features.flatMap((feature) => coordinatesOf(feature)) ?? [],
     [route]
   );
+  const hasCurrentHeading = currentHeading !== null && currentHeading !== undefined;
+  const screenHeading = hasCurrentHeading ? currentHeading - (cameraHeading ?? 0) : 0;
 
   const fitRouteOrLocation = useCallback(() => {
     if (!isMapReadyRef.current) {
@@ -118,13 +122,13 @@ export function MapVisual({
     mapRef.current?.animateCamera(
       {
         center: currentLocation,
-        heading: currentHeading ?? 0,
+        heading: cameraHeading ?? 0,
         pitch: 0,
         zoom: fullscreen ? 18 : 17,
       },
       { duration: 450 }
     );
-  }, [currentHeading, currentLocation, followUser, fullscreen]);
+  }, [cameraHeading, currentLocation, followUser, fullscreen]);
 
   const rememberCurrentCamera = () => {
     const map = mapRef.current;
@@ -187,12 +191,13 @@ export function MapVisual({
         <MapView
           ref={mapRef}
           style={styles.map}
+          pointerEvents={helperMode ? 'auto' : 'none'}
           provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
           initialRegion={SEOUL_REGION}
-          scrollEnabled
-          pitchEnabled
-          rotateEnabled
-          zoomEnabled
+          scrollEnabled={helperMode}
+          pitchEnabled={helperMode}
+          rotateEnabled={helperMode}
+          zoomEnabled={helperMode}
           toolbarEnabled={false}
           onMapReady={() => {
             isMapReadyRef.current = true;
@@ -218,12 +223,6 @@ export function MapVisual({
           {currentLocation && (
             <Marker coordinate={currentLocation} title="현재 위치" anchor={{ x: 0.5, y: 0.5 }} flat>
               <View style={styles.locationMarker}>
-                <View
-                  style={[
-                    styles.headingNeedle,
-                    { transform: [{ rotate: `${Number(currentHeading ?? 0)}deg` }] },
-                  ]}
-                />
                 <View style={styles.locationDot} />
               </View>
             </Marker>
@@ -241,6 +240,19 @@ export function MapVisual({
             {helperMode ? '지도 이동/확대 가능 · 3번 터치로 안내 화면 복귀' : navigationMessage ?? '현재 위치 기준으로 경로를 표시 중'}
           </Text>
         </View>
+        {currentLocation && !helperMode && (
+          <View pointerEvents="none" style={styles.headingStatus}>
+            <Text style={styles.headingStatusText}>{hasCurrentHeading ? '파란 방향 = 실제 이동 방향' : '이동하면 방향 표시'}</Text>
+          </View>
+        )}
+        {followUser && !helperMode && hasCurrentHeading && (
+          <View pointerEvents="none" style={styles.directionOverlay}>
+            <View style={[styles.directionLayer, { transform: [{ rotate: `${screenHeading}deg` }] }]}>
+              <View style={styles.directionCone} />
+              <View style={styles.directionNeedle} />
+            </View>
+          </View>
+        )}
       </View>
     </View>
   );
@@ -302,22 +314,10 @@ const styles = StyleSheet.create({
   trackingText: { color: '#E2E6ED', fontSize: 11, fontWeight: '600' },
   helperText: { color: IeumColors.amber, fontSize: 11, fontWeight: '600' },
   locationMarker: {
-    width: 34,
-    height: 34,
+    width: 24,
+    height: 24,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  headingNeedle: {
-    position: 'absolute',
-    top: 0,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderBottomWidth: 21,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderBottomColor: 'rgba(14, 165, 233, 0.48)',
   },
   locationDot: {
     width: 17,
@@ -326,5 +326,60 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: '#FFFFFF',
     backgroundColor: '#0EA5E9',
+  },
+  directionOverlay: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    width: 72,
+    height: 72,
+    marginTop: -36,
+    marginLeft: -36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  directionLayer: {
+    width: 72,
+    height: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  directionCone: {
+    position: 'absolute',
+    top: 0,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 22,
+    borderRightWidth: 22,
+    borderBottomWidth: 42,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'rgba(14, 165, 233, 0.18)',
+  },
+  directionNeedle: {
+    position: 'absolute',
+    top: 6,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 9,
+    borderRightWidth: 9,
+    borderBottomWidth: 31,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'rgba(14, 165, 233, 0.66)',
+  },
+  headingStatus: {
+    position: 'absolute',
+    top: 9,
+    left: 9,
+    borderRadius: 14,
+    backgroundColor: 'rgba(10, 25, 39, 0.76)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  headingStatusText: {
+    color: '#DDE3EC',
+    fontSize: 10,
+    fontWeight: '700',
   },
 });

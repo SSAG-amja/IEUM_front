@@ -8,14 +8,16 @@ import {
 } from '@/features/ieum/guidance/route-navigator';
 import { RouteInstruction, RouteResponse } from '@/services/route-api';
 
-const ADVANCE_DISTANCE_M = 14;
+const ADVANCE_DISTANCE_M = 5;
 const OFF_ROUTE_DISTANCE_M = 55;
 const AUTO_JUMP_MIN_DELTA = 1;
 
 type GpsGuidanceState = {
   match: RouteMatch | null;
+  matchStepIndex: number | null;
   message: string;
   offRoute: boolean;
+  routeHeading: number | null;
 };
 
 function formatMeters(value: number) {
@@ -40,8 +42,10 @@ export function useGpsGuidance({
 }): GpsGuidanceState {
   const [state, setState] = useState<GpsGuidanceState>({
     match: null,
+    matchStepIndex: null,
     message: '현재 위치를 확인하는 중입니다.',
     offRoute: false,
+    routeHeading: null,
   });
   const lastAutoStepRef = useRef(stepIndex);
   const navigationModel = useMemo(() => buildRouteNavigationModel(route, instructions), [instructions, route]);
@@ -55,8 +59,11 @@ export function useGpsGuidance({
     if (!currentLocation) {
       setState((previous) => ({
         ...previous,
+        match: null,
         message: '현재 위치를 확인하는 중입니다.',
+        matchStepIndex: null,
         offRoute: false,
+        routeHeading: null,
       }));
       return;
     }
@@ -64,19 +71,27 @@ export function useGpsGuidance({
     if (!navigationModel) {
       setState({
         match: null,
+        matchStepIndex: null,
         message: '경로 좌표가 부족해 현재 위치 기반 안내를 사용할 수 없습니다.',
         offRoute: false,
+        routeHeading: null,
       });
       return;
     }
 
     const match = navigationModel.matchLocation(currentLocation, stepIndex);
     if (!match) {
+      setState((previous) => ({
+        ...previous,
+        match: null,
+        matchStepIndex: null,
+        routeHeading: null,
+      }));
       return;
     }
 
     const offRoute = match.distanceFromRouteM > OFF_ROUTE_DISTANCE_M;
-    const progressStepIndex = navigationModel.instructionIndexAtProgress(match.progressM);
+    const progressStepIndex = navigationModel.instructionIndexAtProgress(match.rawProgressM);
     const shouldJumpForward =
       progressStepIndex !== null &&
       progressStepIndex - stepIndex >= AUTO_JUMP_MIN_DELTA &&
@@ -105,7 +120,7 @@ export function useGpsGuidance({
       message = '역 내부 또는 차량 이동 구간입니다. 화면 안내를 확인한 뒤 진행을 완료하면 네 번 터치하세요.';
     }
 
-    setState({ match, message, offRoute });
+    setState({ match, matchStepIndex: stepIndex, message, offRoute, routeHeading: match.routeHeading });
   }, [activeInstruction, currentLocation, instructions.length, navigationModel, onStepChange, stepIndex]);
 
   return state;

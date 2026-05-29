@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { NavigationFix } from '@/features/ieum/guidance/route-navigator';
 
 const CURRENT_LOCATION_TIMEOUT_MS = 8000;
+const LOCATION_RETRY_DELAY_MS = 5000;
 
 type LocationState = {
   currentLocation: NavigationFix | null;
@@ -19,6 +20,7 @@ function toNavigationFix(location: Location.LocationObject): NavigationFix {
     accuracy: location.coords.accuracy,
     heading: location.coords.heading,
     speed: location.coords.speed,
+    timestamp: location.timestamp,
   };
 }
 
@@ -45,15 +47,21 @@ export function useCurrentLocation(enabled: boolean): LocationState {
 
     let subscription: Location.LocationSubscription | null = null;
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
     async function start() {
       try {
+        retryTimer = null;
+        subscription?.remove();
+        subscription = null;
+
         const permission = await Location.requestForegroundPermissionsAsync();
         if (cancelled) {
           return;
         }
         if (permission.status !== Location.PermissionStatus.GRANTED) {
           setPermissionGranted(false);
+          setIsTracking(false);
           setError('현재 위치 권한이 없어 GPS 안내를 시작할 수 없습니다.');
           return;
         }
@@ -94,6 +102,9 @@ export function useCurrentLocation(enabled: boolean): LocationState {
         if (!cancelled) {
           setIsTracking(false);
           setError('현재 위치를 확인하지 못했습니다.');
+          retryTimer = setTimeout(() => {
+            void start();
+          }, LOCATION_RETRY_DELAY_MS);
         }
       }
     }
@@ -102,6 +113,9 @@ export function useCurrentLocation(enabled: boolean): LocationState {
 
     return () => {
       cancelled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
       subscription?.remove();
       setIsTracking(false);
     };

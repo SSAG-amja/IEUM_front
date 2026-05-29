@@ -4,6 +4,7 @@ export type NavigationFix = Coordinate & {
   accuracy?: number | null;
   heading?: number | null;
   speed?: number | null;
+  timestamp?: number | null;
 };
 
 export type InstructionTarget = {
@@ -14,7 +15,9 @@ export type InstructionTarget = {
 
 export type RouteMatch = {
   distanceFromRouteM: number;
+  rawProgressM: number;
   progressM: number;
+  routeHeading: number | null;
   remainingRouteM: number;
   remainingInstructionM: number | null;
   target: InstructionTarget | null;
@@ -25,6 +28,7 @@ export type RouteNavigationModel = {
   targets: InstructionTarget[];
   matchLocation: (location: Coordinate, instructionIndex: number) => RouteMatch | null;
   instructionIndexAtProgress: (progressM: number) => number | null;
+  routeHeadingAtProgress: (progressM: number) => number | null;
 };
 
 type RoutePoint = Coordinate & {
@@ -36,6 +40,14 @@ const EARTH_RADIUS_M = 6371000;
 
 function toRad(value: number) {
   return (value * Math.PI) / 180;
+}
+
+function toDeg(value: number) {
+  return (value * 180) / Math.PI;
+}
+
+function normalizeDegrees(value: number) {
+  return (value + 360) % 360;
 }
 
 export function isGpsNavigableInstruction(instruction?: RouteInstruction) {
@@ -51,6 +63,15 @@ export function distanceMeters(left: Coordinate, right: Coordinate) {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
   return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(a));
+}
+
+export function bearingDegrees(start: Coordinate, end: Coordinate) {
+  const startLat = toRad(start.latitude);
+  const endLat = toRad(end.latitude);
+  const deltaLon = toRad(end.longitude - start.longitude);
+  const y = Math.sin(deltaLon) * Math.cos(endLat);
+  const x = Math.cos(startLat) * Math.sin(endLat) - Math.sin(startLat) * Math.cos(endLat) * Math.cos(deltaLon);
+  return normalizeDegrees(toDeg(Math.atan2(y, x)));
 }
 
 function featureCoordinates(feature: RouteFeature) {
@@ -125,6 +146,20 @@ function projectOnSegment(point: Coordinate, start: RoutePoint, end: RoutePoint)
   };
 }
 
+function routeHeadingAtProgress(points: RoutePoint[], progressM: number) {
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1];
+    const end = points[index];
+    if (progressM <= end.progressM) {
+      return bearingDegrees(start, end);
+    }
+  }
+
+  const start = points[points.length - 2];
+  const end = points[points.length - 1];
+  return start && end ? bearingDegrees(start, end) : null;
+}
+
 function nearestProgress(points: RoutePoint[], location: Coordinate) {
   let best: { distanceM: number; progressM: number } | null = null;
 
@@ -164,12 +199,18 @@ export function buildRouteNavigationModel(
       }
 
       const target = targets.find((item) => item.instructionIndex === instructionIndex) ?? null;
-      const remainingInstructionM = target ? Math.max(0, target.endM - nearest.progressM) : null;
+      const progressForTarget = target
+        ? Math.max(target.startM, Math.min(target.endM, nearest.progressM))
+        : nearest.progressM;
+      const remainingInstructionM = target ? Math.max(0, target.endM - progressForTarget) : null;
+      const routeHeading = routeHeadingAtProgress(points, progressForTarget);
 
       return {
         distanceFromRouteM: nearest.distanceM,
-        progressM: nearest.progressM,
-        remainingRouteM: Math.max(0, totalM - nearest.progressM),
+        rawProgressM: nearest.progressM,
+        progressM: progressForTarget,
+        routeHeading,
+        remainingRouteM: Math.max(0, totalM - progressForTarget),
         remainingInstructionM,
         target,
       };
@@ -177,6 +218,9 @@ export function buildRouteNavigationModel(
     instructionIndexAtProgress(progressM) {
       const target = targets.find((item) => progressM >= item.startM - 8 && progressM <= item.endM + 8);
       return target?.instructionIndex ?? null;
+    },
+    routeHeadingAtProgress(progressM) {
+      return routeHeadingAtProgress(points, progressM);
     },
   };
 }

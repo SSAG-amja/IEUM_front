@@ -25,7 +25,7 @@ const API_URL = process.env.EXPO_PUBLIC_IEUM_API_URL ?? 'http://127.0.0.1:8020';
 const VOICE_DESTINATION_URL = `${API_URL}/api/v1/voice/destination`;
 const VOICE_PROMPT = '목적지를 말씀해주세요.';
 const LOCATION_WAIT_PROMPT = '현재 위치를 파악 중입니다. 잠시만 기다려 주세요.';
-const LOCATION_READY_PROMPT = '현재 위치 파악이 끝났습니다. 목적지를 말씀해주세요.';
+const LOCATION_READY_PROMPT = '현재 위치정보를 찾았습니다. 목적지를 말씀해주세요.';
 const CUE_DURATION_MS = 760;
 const PENDING_CURRENT_LOCATION_LABEL = '현재 위치 확인 중';
 
@@ -38,7 +38,7 @@ function speakPrompt(text: string) {
   return new Promise<void>((resolve) => {
     Speech.speak(text, {
       language: 'ko-KR',
-      rate: 0.95,
+      rate: 1.1,
       useApplicationAudioSession: false,
       onDone: resolve,
       onStopped: resolve,
@@ -90,7 +90,14 @@ export function DestinationScreen() {
   phaseRef.current = phase;
 
   const formatCurrentAddress = useCallback((address: Location.LocationGeocodedAddress) => {
-    const road = [address.street, address.name].filter(Boolean).join(' ');
+    const formatted = address.formattedAddress
+      ?.replace(/^대한민국\s*/, '')
+      .replace(/^서울특별시\s*/, '')
+      .trim();
+    if (formatted) {
+      return formatted;
+    }
+    const road = address.street ? [address.street, address.streetNumber ?? address.name].filter(Boolean).join(' ') : '';
     const area = [address.region, address.city, address.district].filter(Boolean).join(' ');
     return (road || area || '현재 위치').trim();
   }, []);
@@ -110,7 +117,11 @@ export function DestinationScreen() {
       const coordinate = { latitude: fixedCurrent.latitude, longitude: fixedCurrent.longitude };
       const previous = lastReverseGeocodedOriginRef.current;
       if (previous && distanceMeters(previous, coordinate) < 25) {
-        return;
+        if (originCoordinate && originQuery.trim() && originQuery !== PENDING_CURRENT_LOCATION_LABEL) {
+          setIsOriginReady(true);
+          setOriginStatus(`현재 위치 출발지: ${originQuery.trim()}`);
+          return;
+        }
       }
       if (reverseGeocodeInFlightRef.current) {
         return;
@@ -148,6 +159,7 @@ export function DestinationScreen() {
     formatCurrentAddress,
     gps.currentLocation,
     gps.error,
+    originCoordinate,
     originQuery,
     setOriginCoordinate,
     setOriginQuery,
@@ -429,7 +441,7 @@ export function DestinationScreen() {
         accent: '#D78126',
         title: '안전 경로를 찾았습니다',
         subtitle: `총 ${Math.round(route.summary.total_length_m)}m · ${route.summary.uses_subway ? '지하철 포함' : '도보 경로'} · 환승 ${route.summary.transfer_count}회`,
-        tts: `${destinationQuery.trim()}까지 접근성 경로를 찾았습니다. 안내를 시작하려면 화면을 두 번 터치해주세요.`,
+        tts: `${destinationQuery.trim()}까지 경로를 찾았습니다. 안내를 시작하려면 화면을 두 번 터치해주세요.`,
       };
     }
     if (error) {
@@ -445,7 +457,7 @@ export function DestinationScreen() {
       phase: '경로 탐색 중',
       accent: '#D78126',
       title: '안전 경로를 탐색 중입니다',
-      subtitle: `${originQuery.trim()}에서 ${destinationQuery.trim()}까지 접근성 경로를 계산하고 있습니다.`,
+      subtitle: `${originQuery.trim()}에서 ${destinationQuery.trim()}까지 경로를 계산하고 있습니다.`,
       tts: '안전 경로를 탐색 중입니다. 잠시 기다려주세요.',
     };
   }, [destinationQuery, error, isOriginReady, originQuery, phase, route, voiceStatus]);
