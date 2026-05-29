@@ -243,7 +243,7 @@ export function MapVisual({
         </MapView>
         <View pointerEvents="none" style={[styles.message, helperMode ? styles.helperMessage : styles.trackingMessage]}>
           <Text style={helperMode ? styles.helperText : styles.trackingText}>
-            {helperMode ? '지도 이동/확대 가능 · 3번 터치로 안내 화면 복귀' : navigationMessage ?? '현재 위치 기준으로 경로를 표시 중'}
+            {helperMode ? '지도 이동/확대 가능 · 세 번 터치로 안내 화면 복귀' : navigationMessage ?? '현재 위치 기준으로 경로를 표시 중'}
           </Text>
         </View>
         {currentLocation && !helperMode && (

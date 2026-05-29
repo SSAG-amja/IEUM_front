@@ -52,7 +52,8 @@ export function presentInstruction(
   const baseTts = gpsResumes
     ? `GPS 안내를 시작합니다. 위치에 따라 다음 안내로 자동 전환합니다. ${instruction.text}`
     : instruction.text;
-  const tts = stepIndex === 0 ? `${baseTts} 안내를 다시 들으려면 2번, 도움이 필요하시면 3번 터치해주세요.` : baseTts;
+  const tts =
+    stepIndex === 0 ? `${baseTts} 안내를 다시 들으려면 두 번, 도움이 필요하시면 세 번 터치해주세요.` : baseTts;
   const common = {
     tts,
     chip: `안내 ${position}`,

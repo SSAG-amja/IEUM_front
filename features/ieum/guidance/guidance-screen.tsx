@@ -489,15 +489,15 @@ export function GuidanceScreen() {
               </Text>
               <View style={styles.commandGrid}>
                 <View style={styles.command}>
-                  <Text style={styles.commandText}>2번 터치 · 경로 안내 취소</Text>
+                  <Text style={styles.commandText}>두 번 터치 · 경로 안내 취소</Text>
                 </View>
                 <View style={[styles.command, !canUseHelperMode && styles.commandDisabled]}>
                   <Text style={[styles.commandText, !canUseHelperMode && styles.commandTextDisabled]}>
-                    3번 터치 · 주변 도움 모드{canUseHelperMode ? '' : ' 비활성화'}
+                    세 번 터치 · 주변 도움 모드{canUseHelperMode ? '' : ' 비활성화'}
                   </Text>
                 </View>
                 <View style={styles.returnCommand}>
-                  <Text style={styles.returnCommandText}>4번 터치 · 안내 화면으로 돌아가기</Text>
+                  <Text style={styles.returnCommandText}>네 번 터치 · 안내 화면으로 돌아가기</Text>
                 </View>
               </View>
             </Pressable>
