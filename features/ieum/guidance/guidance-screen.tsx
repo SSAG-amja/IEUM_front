@@ -23,6 +23,7 @@ import { RouteInstruction } from '@/services/route-api';
 const DESTINATION_ROUTE = '/destination' as Href;
 const HELPER_MODE_ANNOUNCEMENT_INTERVAL_MS = 20000;
 const GPS_APPROACH_ANNOUNCEMENT_THRESHOLDS_M = [5, 10, 50, 100] as const;
+const GPS_APPROACH_ANNOUNCEMENT_LEAD_M = 10;
 const HEADING_SAFE_ANGLE_DEG = 45;
 const HEADING_WARNING_COOLDOWN_MS = 9000;
 const HEADING_WARNING_HAPTIC_INTERVAL_MS = 1200;
@@ -66,10 +67,16 @@ function approachAnnouncement(thresholdM: number, nextInstruction?: RouteInstruc
   return `다음 안내까지 약 ${thresholdM}미터 남았습니다.`;
 }
 
-function repeatAnnouncementWhenIdle(text: string, isStillValid?: () => boolean) {
+function repeatAnnouncementWhenIdle(text: string, isStillValid?: () => boolean, retries = 8) {
   void Speech.isSpeakingAsync().then((isSpeaking) => {
     if (!isSpeaking && (isStillValid?.() ?? true)) {
       repeatAnnouncement(text);
+      return;
+    }
+    if (retries > 0 && (isStillValid?.() ?? true)) {
+      setTimeout(() => {
+        repeatAnnouncementWhenIdle(text, isStillValid, retries - 1);
+      }, 700);
     }
   });
 }
@@ -135,7 +142,7 @@ export function GuidanceScreen() {
   const [mapFullscreen, setMapFullscreen] = useState(false);
   const [showRequestPanel, setShowRequestPanel] = useState(false);
   const [suppressReturnedStepAnnouncement, setSuppressReturnedStepAnnouncement] = useState(false);
-  const lastGpsPromptRef = useRef<{ stepIndex: number; keys: string[] } | null>(null);
+  const lastGpsPromptRef = useRef<{ stepIndex: number; keys: string[]; previousRemainingM?: number } | null>(null);
   const lastHeadingWarningAtRef = useRef(0);
   const lastHeadingWarningHapticAtRef = useRef(0);
   const progressSampleRef = useRef<{ progressM: number; sampledAt: number; isMoving: boolean } | null>(null);
@@ -174,11 +181,15 @@ export function GuidanceScreen() {
       lastGpsPromptRef.current?.stepIndex === controller.stepIndex
         ? lastGpsPromptRef.current
         : { stepIndex: controller.stepIndex, keys: [] };
-    const markPrompt = (key: string) => {
+    const updatePromptState = (keys: string[], previousRemainingM?: number) => {
       lastGpsPromptRef.current = {
         stepIndex: controller.stepIndex,
-        keys: [...currentPromptState.keys, key],
+        keys,
+        previousRemainingM,
       };
+    };
+    const markPrompt = (key: string, previousRemainingM?: number) => {
+      updatePromptState([...currentPromptState.keys, key], previousRemainingM);
     };
 
     if (gpsGuidance.offRoute && !currentPromptState.keys.includes('off_route')) {
@@ -188,11 +199,23 @@ export function GuidanceScreen() {
     }
 
     if (remainingM !== null && remainingM !== undefined) {
-      const threshold = GPS_APPROACH_ANNOUNCEMENT_THRESHOLDS_M.find(
-        (value) => remainingM <= value && !currentPromptState.keys.includes(`approach_${value}`)
+      const previousRemainingM = currentPromptState.previousRemainingM;
+      if (previousRemainingM === undefined) {
+        updatePromptState(currentPromptState.keys, remainingM);
+        return;
+      }
+
+      const crossedThresholds = GPS_APPROACH_ANNOUNCEMENT_THRESHOLDS_M.filter(
+        (value) =>
+          previousRemainingM > value + GPS_APPROACH_ANNOUNCEMENT_LEAD_M &&
+          remainingM <= value + GPS_APPROACH_ANNOUNCEMENT_LEAD_M &&
+          !currentPromptState.keys.includes(`approach_${value}`)
       );
+      const threshold = crossedThresholds.length > 0 ? Math.max(...crossedThresholds) : undefined;
+      updatePromptState(currentPromptState.keys, remainingM);
+
       if (threshold !== undefined) {
-        markPrompt(`approach_${threshold}`);
+        markPrompt(`approach_${threshold}`, remainingM);
         const expectedStepIndex = controller.stepIndex;
         repeatAnnouncementWhenIdle(
           approachAnnouncement(threshold, controller.instructions[controller.stepIndex + 1]),

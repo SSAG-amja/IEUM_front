@@ -20,6 +20,7 @@ export type RouteMatch = {
   routeHeading: number | null;
   remainingRouteM: number;
   remainingInstructionM: number | null;
+  distanceToTargetEndM: number | null;
   target: InstructionTarget | null;
 };
 
@@ -37,6 +38,9 @@ type RoutePoint = Coordinate & {
 
 const GPS_INSTRUCTION_TYPES = new Set(['walk', 'walk_with_braille', 'crosswalk', 'move', 'facility_connector']);
 const EARTH_RADIUS_M = 6371000;
+const TARGET_END_SNAP_LOOKAHEAD_M = 20;
+const TARGET_END_SNAP_BASE_M = 8;
+const TARGET_END_SNAP_MAX_M = 18;
 
 function toRad(value: number) {
   return (value * Math.PI) / 180;
@@ -160,6 +164,24 @@ function routeHeadingAtProgress(points: RoutePoint[], progressM: number) {
   return start && end ? bearingDegrees(start, end) : null;
 }
 
+function coordinateAtProgress(points: RoutePoint[], progressM: number): Coordinate | null {
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1];
+    const end = points[index];
+    if (progressM <= end.progressM) {
+      const segmentM = Math.max(0, end.progressM - start.progressM);
+      const ratio = segmentM ? Math.max(0, Math.min(1, (progressM - start.progressM) / segmentM)) : 0;
+      return {
+        latitude: start.latitude + (end.latitude - start.latitude) * ratio,
+        longitude: start.longitude + (end.longitude - start.longitude) * ratio,
+      };
+    }
+  }
+
+  const last = points[points.length - 1];
+  return last ? { latitude: last.latitude, longitude: last.longitude } : null;
+}
+
 function nearestProgress(points: RoutePoint[], location: Coordinate) {
   let best: { distanceM: number; progressM: number } | null = null;
 
@@ -199,10 +221,26 @@ export function buildRouteNavigationModel(
       }
 
       const target = targets.find((item) => item.instructionIndex === instructionIndex) ?? null;
-      const progressForTarget = target
+      let progressForTarget = target
         ? Math.max(target.startM, Math.min(target.endM, nearest.progressM))
         : nearest.progressM;
-      const remainingInstructionM = target ? Math.max(0, target.endM - progressForTarget) : null;
+      let remainingInstructionM = target ? Math.max(0, target.endM - progressForTarget) : null;
+      let distanceToTargetEndM: number | null = null;
+
+      if (target && remainingInstructionM !== null && remainingInstructionM <= TARGET_END_SNAP_LOOKAHEAD_M) {
+        const targetEnd = coordinateAtProgress(points, target.endM);
+        distanceToTargetEndM = targetEnd ? distanceMeters(location, targetEnd) : null;
+        const accuracyM =
+          typeof (location as NavigationFix).accuracy === 'number' && Number.isFinite((location as NavigationFix).accuracy)
+            ? Math.max(0, (location as NavigationFix).accuracy ?? 0)
+            : 0;
+        const snapDistanceM = Math.min(TARGET_END_SNAP_MAX_M, Math.max(TARGET_END_SNAP_BASE_M, accuracyM + 3));
+        if (distanceToTargetEndM !== null && distanceToTargetEndM <= snapDistanceM) {
+          progressForTarget = target.endM;
+          remainingInstructionM = 0;
+        }
+      }
+
       const routeHeading = routeHeadingAtProgress(points, progressForTarget);
 
       return {
@@ -212,6 +250,7 @@ export function buildRouteNavigationModel(
         routeHeading,
         remainingRouteM: Math.max(0, totalM - progressForTarget),
         remainingInstructionM,
+        distanceToTargetEndM,
         target,
       };
     },

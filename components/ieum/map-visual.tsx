@@ -30,6 +30,7 @@ const SEOUL_REGION = {
 };
 const MAP_TAP_SEQUENCE_DELAY_MS = 700;
 const DOUBLE_TAP_ZOOM_BLOCK_MS = 1200;
+const FOLLOW_CAMERA_ANIMATION_MS = 250;
 
 function coordinatesOf(feature: RouteFeature) {
   return feature.geometry.coordinates.map(([longitude, latitude]) => ({ latitude, longitude }));
@@ -126,7 +127,7 @@ export function MapVisual({
         pitch: 0,
         zoom: fullscreen ? 18 : 17,
       },
-      { duration: 450 }
+      { duration: FOLLOW_CAMERA_ANIMATION_MS }
     );
   }, [cameraHeading, currentLocation, followUser, fullscreen]);
 
@@ -221,7 +222,12 @@ export function MapVisual({
             />
           ))}
           {currentLocation && (
-            <Marker coordinate={currentLocation} title="현재 위치" anchor={{ x: 0.5, y: 0.5 }} flat>
+            <Marker
+              coordinate={currentLocation}
+              title="현재 위치"
+              anchor={{ x: 0.5, y: 0.5 }}
+              flat
+              tracksViewChanges={Platform.OS === 'android'}>
               <View style={styles.locationMarker}>
                 <View style={styles.locationDot} />
               </View>

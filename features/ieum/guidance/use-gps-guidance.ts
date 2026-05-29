@@ -8,7 +8,7 @@ import {
 } from '@/features/ieum/guidance/route-navigator';
 import { RouteInstruction, RouteResponse } from '@/services/route-api';
 
-const ADVANCE_DISTANCE_M = 5;
+const ADVANCE_DISTANCE_M = 2;
 const OFF_ROUTE_DISTANCE_M = 55;
 const AUTO_JUMP_MIN_DELTA = 1;
 

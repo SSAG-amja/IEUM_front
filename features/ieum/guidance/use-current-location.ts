@@ -80,9 +80,9 @@ export function useCurrentLocation(enabled: boolean): LocationState {
 
         subscription = await Location.watchPositionAsync(
           {
-            accuracy: Location.Accuracy.High,
-            timeInterval: 1000,
-            distanceInterval: 3,
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 500,
+            distanceInterval: 1,
           },
           (location) => {
             setCurrentLocation(toNavigationFix(location));
